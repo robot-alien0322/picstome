@@ -7,6 +7,7 @@ use App\Traits\InteractsWithTallStackModals;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithPagination;
 use TallStackUi\Traits\Interactions;
@@ -18,6 +19,22 @@ new class extends Component
     use WithPagination;
 
     public GalleryForm $form;
+
+    /** Eugene fork: folder filter ('all', 'none' = unfiled, or a folder id). */
+    #[Url]
+    public string $folder = 'all';
+
+    public function updatedFolder(): void
+    {
+        $this->resetPage();
+    }
+
+    /** Eugene fork: this team's gallery folders with gallery counts. */
+    #[Computed]
+    public function galleryFolders()
+    {
+        return $this->team?->galleryFolders()->withCount('galleries')->get() ?? collect();
+    }
 
     public function mount()
     {
@@ -117,6 +134,9 @@ new class extends Component
         return $this->team->galleries()
             ->with(['coverPhoto', 'firstImagePhoto'])
             ->withCount('photos')
+            // Eugene fork: folder filter
+            ->when($this->folder === 'none', fn ($q) => $q->whereNull('gallery_folder_id'))
+            ->when(ctype_digit($this->folder), fn ($q) => $q->where('gallery_folder_id', (int) $this->folder))
             ->latest()
             ->paginate(24);
     }
@@ -145,8 +165,28 @@ new class extends Component
             <x-ts-modal-trigger :name="auth()->check() ? 'create-gallery' : 'login'">
                 <x-ts-button variant="primary">{{ __('Create gallery') }}</x-ts-button>
             </x-ts-modal-trigger>
+
+            {{-- Eugene fork: gallery folders --}}
+            <x-ts-button variant="secondary" icon="folder" :href="route('gallery-folders')">{{ __('Folders') }}</x-ts-button>
         </div>
     </div>
+
+    {{-- Eugene fork: folder tabs --}}
+    @if ($this->galleryFolders->isNotEmpty())
+        <div class="mt-8 flex flex-wrap gap-2" data-gallery-folders>
+            @php($pill = 'rounded-full px-4 py-1.5 text-sm transition')
+            @php($on = 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900')
+            @php($off = 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80')
+            <button type="button" wire:click="$set('folder', 'all')" class="{{ $pill }} {{ $folder === 'all' ? $on : $off }}">{{ __('All') }}</button>
+            @foreach ($this->galleryFolders as $galleryFolder)
+                <button type="button" wire:key="folder-pill-{{ $galleryFolder->id }}" wire:click="$set('folder', '{{ $galleryFolder->id }}')"
+                    class="{{ $pill }} {{ $folder === (string) $galleryFolder->id ? $on : $off }}">
+                    {{ $galleryFolder->name }} <span class="opacity-60">{{ $galleryFolder->galleries_count }}</span>
+                </button>
+            @endforeach
+            <button type="button" wire:click="$set('folder', 'none')" class="{{ $pill }} {{ $folder === 'none' ? $on : $off }}">{{ __('Unfiled') }}</button>
+        </div>
+    @endif
 
     @if ($this->galleries?->isNotEmpty())
         <div class="mt-12">
