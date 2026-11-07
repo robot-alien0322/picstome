@@ -3,4 +3,7 @@
 // Eugene fork: AGPL-3.0 section 13 - offer the running source to network users.
 return [
     'source_url' => env('PICSTOME_SOURCE_URL', 'https://github.com/robot-alien0322/picstome/tree/eugene/sets'),
+
+    // Exact brand accent (hex) for client pages; overrides the preset color. Empty = use the preset.
+    'brand_hex' => env('PICSTOME_BRAND_HEX'),
 ];

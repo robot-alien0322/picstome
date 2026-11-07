@@ -73,6 +73,30 @@
             </style>
         @endif
 
+        {{-- Eugene fork: exact brand accent color from config('fork.brand_hex') --}}
+        @php($forkHex = preg_match('/^#[0-9a-fA-F]{6}$/', (string) config('fork.brand_hex')) ? config('fork.brand_hex') : null)
+        @if ($forkHex)
+            <style>
+                :root {
+                    --fork-brand: {{ $forkHex }};
+                    --color-primary-50: color-mix(in oklab, var(--fork-brand) 8%, white);
+                    --color-primary-100: color-mix(in oklab, var(--fork-brand) 16%, white);
+                    --color-primary-200: color-mix(in oklab, var(--fork-brand) 32%, white);
+                    --color-primary-300: color-mix(in oklab, var(--fork-brand) 52%, white);
+                    --color-primary-400: color-mix(in oklab, var(--fork-brand) 76%, white);
+                    --color-primary-500: var(--fork-brand);
+                    --color-primary-600: color-mix(in oklab, var(--fork-brand) 86%, black);
+                    --color-primary-700: color-mix(in oklab, var(--fork-brand) 72%, black);
+                    --color-primary-800: color-mix(in oklab, var(--fork-brand) 58%, black);
+                    --color-primary-900: color-mix(in oklab, var(--fork-brand) 44%, black);
+                    --color-primary-950: color-mix(in oklab, var(--fork-brand) 30%, black);
+                    --color-accent: var(--fork-brand);
+                    --color-accent-content: var(--color-primary-600);
+                    --color-accent-foreground: white;
+                }
+            </style>
+        @endif
+
         {{ $head ?? '' }}
 
         @stack('head')
