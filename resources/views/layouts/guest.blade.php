@@ -102,9 +102,11 @@
         @stack('head')
     </head>
     <body
-        {{-- Eugene fork: PICSTOME_FORCE_LIGHT keeps client pages light --}}
-        @if (config('fork.force_light'))
+        {{-- Eugene fork: PICSTOME_CLIENT_THEME=light|dark pins client pages (PICSTOME_FORCE_LIGHT still = light) --}}
+        @if (config('fork.force_light') || config('fork.client_theme') === 'light')
             x-data="{ darkTheme: false }"
+        @elseif (config('fork.client_theme') === 'dark')
+            x-data="{ darkTheme: true }"
         @else
             x-data="tallstackui_darkTheme({ name: 'dark-theme', default: 'system' })"
         @endif

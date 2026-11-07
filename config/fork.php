@@ -13,4 +13,7 @@ return [
     // Client galleries look and behave like eugenebellau.com: justified rows with a margin,
     // and a framed photo viewer on near-black.
     'website_style' => (bool) env('PICSTOME_WEBSITE_STYLE', false),
+
+    // Client page theme: system (follow the visitor), light, or dark. force_light=true still means light.
+    'client_theme' => env('PICSTOME_CLIENT_THEME', 'system'),
 ];

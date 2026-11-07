@@ -540,7 +540,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         @keyup.window.f
         ="$wire.favorite()"
     @endif
-    class="flex h-screen flex-col {{ config('fork.website_style') ? 'bg-[#0b0a09]' : '' }}" {{-- Eugene fork: website-style viewer --}}
+    class="flex h-screen flex-col {{ config('fork.website_style') ? 'bg-white dark:bg-zinc-800' : '' }}" {{-- Eugene fork: website-style viewer --}}
     x-on:resize.window="updateDimensions()"
 >
     <div
