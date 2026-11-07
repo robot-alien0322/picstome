@@ -26,6 +26,30 @@
     $columnCounts = $context === 'owner' ? '2,3,4' : '1,2,3,4,5';
 @endphp
 
+{{-- Eugene fork: justified rows on client pages when PICSTOME_WEBSITE_STYLE is on --}}
+@if ($context === 'shared' && config('fork.website_style'))
+    <div class="mx-auto w-full max-w-[1800px] px-3 sm:px-6 lg:px-10">
+        <div
+            {{ $attributes->class(['relative', '[&_[data-photo-card]>a]:h-full', '[&_[data-photo-card]_a_img]:h-full', '[&_[data-photo-card]_a_img]:object-cover']) }}
+            data-photo-justified
+            data-justified-gap="8"
+            x-data="photoJustified"
+            wire:key="photo-justified-{{ $context }}-{{ $htmlIdPrefix }}"
+        >
+            @foreach ($photos as $photo)
+                <x-photo-tile
+                    :$photo
+                    :$gallery
+                    :$context
+                    :as-favorite="$asFavorite"
+                    :as-commented="$asCommented"
+                    :html-id="$htmlIdPrefix.'-'.$photo->id"
+                    :index="$loop->index"
+                />
+            @endforeach
+        </div>
+    </div>
+@else
 <div
     {{ $attributes->class(['relative', 'gap-1', $columns]) }}
     data-photo-masonry
@@ -47,3 +71,4 @@
         />
     @endforeach
 </div>
+@endif

@@ -540,7 +540,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         @keyup.window.f
         ="$wire.favorite()"
     @endif
-    class="flex h-screen flex-col"
+    class="flex h-screen flex-col {{ config('fork.website_style') ? 'bg-[#0b0a09]' : '' }}" {{-- Eugene fork: website-style viewer --}}
     x-on:resize.window="updateDimensions()"
 >
     <div
@@ -552,7 +552,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         @touchend="onTouchEnd($event)"
         @touchcancel="onTouchEnd($event)"
     >
-        <div class="relative flex w-full items-center justify-center overflow-hidden">
+        <div class="relative flex w-full items-center justify-center overflow-hidden {{ config('fork.website_style') ? 'px-3 pt-14 pb-16 sm:px-20 sm:py-16' : '' }}">
             @if ($photo->isImage())
                 <img
                     wire:ignore

@@ -9,4 +9,8 @@ return [
 
     // Client pages ignore the visitor's dark mode and always render light.
     'force_light' => (bool) env('PICSTOME_FORCE_LIGHT', false),
+
+    // Client galleries look and behave like eugenebellau.com: justified rows with a margin,
+    // and a framed photo viewer on near-black.
+    'website_style' => (bool) env('PICSTOME_WEBSITE_STYLE', false),
 ];
