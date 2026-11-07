@@ -102,7 +102,12 @@
         @stack('head')
     </head>
     <body
-        x-data="tallstackui_darkTheme({ name: 'dark-theme', default: 'system' })"
+        {{-- Eugene fork: PICSTOME_FORCE_LIGHT keeps client pages light --}}
+        @if (config('fork.force_light'))
+            x-data="{ darkTheme: false }"
+        @else
+            x-data="tallstackui_darkTheme({ name: 'dark-theme', default: 'system' })"
+        @endif
         x-bind:class="{ 'dark': darkTheme }"
         @class([
             'min-h-screen',
