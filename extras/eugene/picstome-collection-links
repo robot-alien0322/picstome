@@ -1,0 +1,9 @@
+#!/bin/bash
+# Prints the private collection link for every Photoshoot.
+sudo -u www-data HOME=/tmp php8.4 -r '
+chdir("/var/www/picstome"); require "vendor/autoload.php"; $a=require "bootstrap/app.php"; $a->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+foreach (App\Models\Photoshoot::query()->orderByDesc("id")->get() as $s) {
+  $t=substr(hash_hmac("sha256","collection:".$s->id,(string)config("app.key")),0,16);
+  $n=$s->galleries()->where("is_shared",true)->count();
+  printf("%-34s %2d shared  %s/c/%s\n", mb_strimwidth($s->name,0,33,"…"), $n, rtrim(config("app.url"),"/"), $t);
+}'
