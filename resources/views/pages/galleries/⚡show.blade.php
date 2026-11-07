@@ -774,6 +774,9 @@ new class extends Component
                 <x-ts-button variant="primary">{{ __('Add media') }}</x-ts-button>
             </x-ts-modal-trigger>
 
+            {{-- Eugene fork: gallery sets --}}
+            <x-ts-button variant="secondary" icon="squares-2x2" :href="route('galleries.sets', $gallery)">{{ __('Sets') }}</x-ts-button>
+
             @if ($gallery->coverPhoto)
                 <x-ts-button variant="secondary" icon="viewfinder-circle" wire:click="$set('adjustingCover', true)">{{ __('Adjust cover') }}</x-ts-button>
             @endif

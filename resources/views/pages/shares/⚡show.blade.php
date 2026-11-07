@@ -28,6 +28,10 @@ new #[Layout('layouts.guest')] class extends Component
     #[Url]
     public $activeTab = 'all';
 
+    /** Eugene fork: selected gallery set id (null = all photos). */
+    #[Url]
+    public ?string $set = null;
+
     /**
      * Whether the photographer is currently routing camera uploads here.
      * The client page only polls for new photos while this is true.
@@ -90,6 +94,7 @@ new #[Layout('layouts.guest')] class extends Component
             $this->commentedPhotos,
             $this->mediaCounts,
             $this->coverImage,
+            $this->gallerySets, // Eugene fork
         );
     }
 
@@ -126,7 +131,26 @@ new #[Layout('layouts.guest')] class extends Component
     #[Computed]
     public function photoIds(): \Illuminate\Support\Collection
     {
+        // Eugene fork: limit to the selected set, keeping the gallery's order
+        if ($this->set && ($gallerySet = $this->gallerySets->firstWhere('id', (int) $this->set))) {
+            return $gallerySet->readyPhotoIds();
+        }
+
         return $this->gallery->readyPhotoIds();
+    }
+
+    /** Eugene fork: this gallery's sets that have ready photos. */
+    #[Computed]
+    public function gallerySets()
+    {
+        return $this->gallery->sets()->withCount(['photos' => fn ($q) => $q->ready()])->get()->where('photos_count', '>', 0)->values();
+    }
+
+    /** Eugene fork: switching sets starts the grid from the top. */
+    public function updatedSet(): void
+    {
+        $this->allPhotoLimit = 60;
+        $this->forgetPhotoCollections();
     }
 
     #[Computed]
@@ -288,6 +312,21 @@ new #[Layout('layouts.guest')] class extends Component
     @if ($this->totalPhotos > 0)
         <div class="mt-8">
             <div x-show="$wire.activeTab === 'all'" class="pt-1" data-gallery-panel>
+                    {{-- Eugene fork: gallery set tabs --}}
+                    @if ($this->gallerySets->isNotEmpty())
+                        <div class="mx-auto mb-6 flex max-w-7xl flex-wrap justify-center gap-2 px-4" data-gallery-sets>
+                            <button type="button" wire:click="$set('set', null)"
+                                @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => ! $set, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $set])>
+                                {{ __('All') }}
+                            </button>
+                            @foreach ($this->gallerySets as $gallerySet)
+                                <button type="button" wire:key="set-pill-{{ $gallerySet->id }}" wire:click="$set('set', '{{ $gallerySet->id }}')"
+                                    @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => $set === (string) $gallerySet->id, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $set !== (string) $gallerySet->id])>
+                                    {{ $gallerySet->name }}
+                                </button>
+                            @endforeach
+                        </div>
+                    @endif
                     <x-photo-masonry :photos="$this->allPhotos" :$gallery context="shared" html-id-prefix="photo" />
 
                     <x-auto-load-more
