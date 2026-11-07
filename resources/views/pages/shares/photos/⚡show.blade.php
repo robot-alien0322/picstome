@@ -719,7 +719,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             @endif
         </div>
         <div
-            class="absolute top-0 bottom-0 left-0 z-30 flex items-center px-3 max-sm:top-auto max-sm:px-1 max-sm:py-1"
+            class="absolute top-0 bottom-0 left-0 z-30 flex items-center px-3 max-sm:top-auto max-sm:px-1 max-sm:py-1 {{ config('fork.website_style') ? '[@media(hover:none)]:hidden!' : '' }}" {{-- Eugene fork: swipe on touch, no arrows --}}
             :class="zoom ? 'hidden' : 'flex'"
         >
             @if ($previous)
@@ -735,7 +735,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             @endif
         </div>
         <div
-            class="absolute top-0 right-0 bottom-0 z-30 flex items-center px-3 max-sm:top-auto max-sm:px-1 max-sm:py-1"
+            class="absolute top-0 right-0 bottom-0 z-30 flex items-center px-3 max-sm:top-auto max-sm:px-1 max-sm:py-1 {{ config('fork.website_style') ? '[@media(hover:none)]:hidden!' : '' }}" {{-- Eugene fork: swipe on touch, no arrows --}}
             :class="zoom ? 'hidden' : 'flex'"
         >
             @if ($next)
