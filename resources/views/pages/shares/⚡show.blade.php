@@ -280,6 +280,8 @@ new #[Layout('layouts.guest')] class extends Component
                     {{ $gallery->share_description }}
                 </x-ts-subheading>
             @endif
+
+            @include('partials.fork-social-icons', ['team' => $gallery->team]) {{-- Eugene fork --}}
         </div>
     </section>
 
