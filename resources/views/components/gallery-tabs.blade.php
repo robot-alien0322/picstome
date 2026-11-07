@@ -103,6 +103,9 @@
         </button>
     @endif
 
+    {{-- Eugene fork: extra tabs (e.g. Activity) --}}
+    {{ $extraTabs ?? '' }}
+
     @if ($showDownload || $downloadUrl)
         <button
             type="button"

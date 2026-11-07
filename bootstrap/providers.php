@@ -7,4 +7,5 @@ return [
     App\Providers\GallerySetsServiceProvider::class, // Eugene fork: gallery sets
     App\Providers\GalleryFoldersServiceProvider::class, // Eugene fork: gallery folders
     App\Providers\GalleryShortLinksServiceProvider::class, // Eugene fork: short links
+    App\Providers\GalleryActivityServiceProvider::class, // Eugene fork: activity + download emails
 ];

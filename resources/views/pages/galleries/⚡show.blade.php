@@ -793,6 +793,21 @@ new class extends Component
                 :show-download="true"
                 :active-tab="$activeTab"
             >
+                {{-- Eugene fork: activity tab --}}
+                <x-slot name="extraTabs">
+                    <button
+                        type="button"
+                        @click="$wire.activeTab = 'activity'; $dispatch('gallery-tab-changed')"
+                        x-bind:data-current="$wire.activeTab === 'activity'"
+                        class="inline-flex items-center gap-2 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-zinc-500 cursor-pointer transition hover:text-zinc-800 data-[current=true]:border-brand-green data-[current=true]:text-brand-green dark:text-zinc-400 dark:hover:text-white dark:data-[current=true]:border-brand-sage dark:data-[current=true]:text-brand-sage"
+                        aria-label="{{ __('Activity') }}"
+                        title="{{ __('Activity') }}"
+                    >
+                        <x-icon name="chart-bar" class="size-5" />
+                        <span class="max-sm:sr-only">{{ __('Activity') }}</span>
+                    </button>
+                </x-slot>
+
                 <x-slot name="afterFavorites">
                     @if ($this->totalFavorites > 0)
                         <x-ts-modal-trigger name="favorite-list">
@@ -845,6 +860,10 @@ new class extends Component
                     <x-gallery-sync-panel :$gallery />
                 </div>
             @endif
+            {{-- Eugene fork: activity tab --}}
+            <div x-show="$wire.activeTab === 'activity'" x-cloak class="pt-1">
+                <livewire:gallery-activity-panel :$gallery :key="'activity-panel-'.$gallery->id" />
+            </div>
             <div x-show="$wire.activeTab === 'download'" class="pt-1" data-gallery-panel>
                     <livewire:gallery-download-panel
                         :$gallery
