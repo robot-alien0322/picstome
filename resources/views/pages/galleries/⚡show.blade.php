@@ -1214,6 +1214,9 @@ new class extends Component
                 readonly
                 copyable
             />
+
+            {{-- Eugene fork: short link --}}
+            <livewire:gallery-short-link :$gallery :key="'short-link-'.$gallery->id" />
         </div>
     </x-ts-modal>
 
