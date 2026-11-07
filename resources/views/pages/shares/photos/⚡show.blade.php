@@ -280,6 +280,15 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             this.gestureBlocked = false
             this.gestureActive = true
 
+            if (event.touches.length >= 2 && @js((bool) config('fork.website_style'))) {
+                // Eugene fork: no pinch zoom, like the website lightbox
+                this.gestureHadMultipleTouches = true
+                this.swipeStartX = null
+                this.swipeStartY = null
+
+                return
+            }
+
             if (event.touches.length >= 2) {
                 this.gestureHadMultipleTouches = true
                 this.swipeStartX = null
@@ -406,6 +415,8 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             this.translateY = 0
         },
         toggleZoom() {
+            if (@js((bool) config('fork.website_style'))) return // Eugene fork: no zoom, like the website lightbox
+
             if (this.scale > 1.01) {
                 this.resetZoom()
 
@@ -581,7 +592,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                     @click="if (!isMobile()) toggleZoom()"
                     @contextmenu.prevent
                     :class="loaded || errored ? '' : 'animate-pulse bg-black/60 dark:bg-white/60'"
-                    class="mx-auto h-full w-full max-w-full object-contain hover:cursor-zoom-in"
+                    class="mx-auto h-full w-full max-w-full object-contain {{ config('fork.website_style') ? '' : 'hover:cursor-zoom-in' }}"
                     alt="{{ $photo->name }}"
                 />
                 <img
