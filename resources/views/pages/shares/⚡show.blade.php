@@ -268,7 +268,7 @@ new #[Layout('layouts.guest')] class extends Component
 
         <div class="mx-auto w-full max-w-5xl px-4 py-8 text-center">
             <a href="{{ route('handle.show', ['handle' => $gallery->team->handle]) }}" class="inline-block">
-                <img src="{{ $gallery->team->brand_logo_url }}" class="mx-auto max-h-16 md:max-h-24" />
+                <img src="{{ $gallery->team->brand_logo_url }}" class="mx-auto max-h-16 md:max-h-24 dark:invert" {{-- Eugene fork: dark-mode logo --}} />
             </a>
 
             <x-ts-heading level="1" size="xl" class="mt-4">{{ $gallery->name }}</x-ts-heading>

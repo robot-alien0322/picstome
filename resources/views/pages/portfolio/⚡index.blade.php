@@ -42,7 +42,7 @@ class extends Component
         <div class="space-y-4 text-center">
             <a href="{{ route('handle.show', ['handle' => $team->handle]) }}" class="block space-y-4" wire:navigate>
                 @if($team->brand_logo_url)
-                    <img src="{{ $team->brand_logo_url }}" class="mx-auto max-h-[90px] w-auto md:max-h-[160px]" alt="{{ $team->name }}" />
+                    <img src="{{ $team->brand_logo_url }}" class="mx-auto max-h-[90px] w-auto md:max-h-[160px] dark:invert" alt="{{ $team->name }}" {{-- Eugene fork: dark-mode logo --}} />
                 @elseif($team->brand_logo_icon_url)
                     <img src="{{ $team->brand_logo_icon_url . '&w=256&h=256' }}" class="mx-auto size-32" alt="{{ $team->name }}" />
                 @else
