@@ -53,7 +53,7 @@ foreach ($galleries as $g) {
     ];
 }
 $team = $shoot->team;
-$studio = $team?->name ? preg_replace("/'s Studio$/", '', $team->name) . ' Photography' : 'Photography';
+$studio = $team?->name ? (preg_match("/'s Studio$/", $team->name) ? preg_replace("/'s Studio$/", '', $team->name) . ' Photography' : $team->name) : 'Photography';
 $sub = array_filter([$shoot->date ? \Illuminate\Support\Carbon::parse($shoot->date)->format('F j, Y') : null, $shoot->location]);
 header('X-Robots-Tag: noindex, nofollow');
 ?><!doctype html>
