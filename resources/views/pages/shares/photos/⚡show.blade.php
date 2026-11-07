@@ -11,7 +11,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 
-new #[Layout('layouts.guest', ['fullScreen' => true])] class extends Component
+new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /* Eugene fork */])] class extends Component
 {
     use InteractsWithTallStackModals;
 

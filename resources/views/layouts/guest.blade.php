@@ -122,8 +122,8 @@
             {{ $slot }}
         </main>
 
-        {{-- Eugene fork: AGPL source link (not on full-screen pages like the photo viewer) --}}
-        @unless ($fullScreen ?? false)
+        {{-- Eugene fork: AGPL source link (pages opt out with layout data hideSourceLink, e.g. the photo viewer) --}}
+        @unless ($hideSourceLink ?? false)
             <footer class="py-6 text-center text-xs text-zinc-400 dark:text-zinc-500">
                 <a href="{{ config('fork.source_url') }}" target="_blank" rel="noopener" class="hover:underline">{{ __('Source code') }}</a>
             </footer>
