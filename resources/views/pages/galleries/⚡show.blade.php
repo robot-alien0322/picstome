@@ -1167,6 +1167,8 @@ new class extends Component
                 </x-ts-callout>
             @endif
 
+            <livewire:gallery-subtitle :$gallery :key="'subtitle-'.$gallery->id" /> {{-- Eugene fork --}}
+
             <x-ts-switch
                 wire:model="shareForm.passwordProtected"
                 :label="__('Protect with a password')"

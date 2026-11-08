@@ -16,6 +16,4 @@ return [
 
     // Client page theme: system (follow the visitor), light, or dark. force_light=true still means light.
     'client_theme' => env('PICSTOME_CLIENT_THEME', 'system'),
-    // Text shown under the gallery title on client pages (replaces the accent line).
-    'gallery_byline' => env('PICSTOME_GALLERY_BYLINE'),
 ];
