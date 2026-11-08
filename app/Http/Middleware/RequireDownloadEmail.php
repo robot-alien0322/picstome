@@ -12,8 +12,8 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Gallery activity (Eugene fork): ask for an email before a client download,
- * then log every download with that email.
+ * Gallery activity (Eugene fork): ask for an email before a full-gallery (zip)
+ * download, then log every download (single photos too) with the known email.
  */
 class RequireDownloadEmail
 {
@@ -25,7 +25,10 @@ class RequireDownloadEmail
             return $next($request);
         }
 
-        if ($gallery->require_download_email && ! Tracker::email($request)) {
+        // Single photos download freely; only full-gallery zips ask for an email.
+        $isSinglePhoto = $request->route('photo') instanceof Photo;
+
+        if ($gallery->require_download_email && ! $isSinglePhoto && ! Tracker::email($request)) {
             $request->session()->put('dl_next.'.$gallery->id, $request->fullUrl());
 
             return redirect()->route('shares.download-email', $gallery);

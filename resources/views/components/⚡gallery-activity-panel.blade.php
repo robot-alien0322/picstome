@@ -92,7 +92,7 @@ new class extends Component
     </div>
 
     <div class="flex flex-wrap items-center justify-between gap-3">
-        <x-ts-switch wire:model.live="requireEmail" :label="__('Require an email to download')" />
+        <x-ts-switch wire:model.live="requireEmail" :label="__('Require an email to download the full gallery')" :description="__('Single photos can always be downloaded without one.')" />
         <div class="flex items-center gap-3 text-xs text-zinc-500">
             @if ($this->stats['lastVisit'])
                 <span>{{ __('Last visit :t', ['t' => \Illuminate\Support\Carbon::parse($this->stats['lastVisit'])->diffForHumans()]) }}</span>

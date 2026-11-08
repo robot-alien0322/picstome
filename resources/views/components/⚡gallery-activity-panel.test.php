@@ -61,17 +61,24 @@ test('the owner and link-preview bots are not counted', function () {
     expect(GalleryActivity::count())->toBe(0);
 });
 
-test('a download without an email goes to the email page', function () {
-    fakeDownloads();
-
-    $this->get($this->photoDl)->assertRedirect(route('shares.download-email', $this->gallery));
+test('a full-gallery download without an email goes to the email page', function () {
     $this->get(route('shares.download', $this->gallery))->assertRedirect(route('shares.download-email', $this->gallery));
 
     expect(GalleryActivity::where('type', 'download')->count())->toBe(0);
 });
 
+test('a single photo downloads without an email and is still logged', function () {
+    fakeDownloads();
+
+    $this->get($this->photoDl)->assertRedirect('https://cdn.example.test/DSC0001.jpg');
+
+    $dl = GalleryActivity::where('type', 'download')->first();
+    expect($dl->email)->toBeNull()->and($dl->detail)->toBe('DSC0001.jpg');
+});
+
 test('entering an email remembers it and sends the visitor on to the download', function () {
-    $this->get($this->photoDl); // stores the intended download in the session
+    $zipDl = route('shares.download', $this->gallery);
+    $this->get($zipDl); // stores the intended download in the session
 
     Livewire::test('pages::shares.download-email', ['gallery' => $this->gallery])
         ->set('email', 'Client@Example.com')
@@ -79,7 +86,7 @@ test('entering an email remembers it and sends the visitor on to the download', 
         ->call('submit')
         ->assertHasNoErrors()
         ->assertSet('done', true)
-        ->assertSet('next', $this->photoDl);
+        ->assertSet('next', $zipDl);
 
     $row = GalleryActivity::where('type', 'email')->first();
     expect($row->email)->toBe('client@example.com')->and($row->name)->toBe('Jane');
