@@ -274,7 +274,11 @@ new #[Layout('layouts.guest')] class extends Component
 
             <x-ts-heading level="1" size="xl" class="mt-4">{{ $gallery->name }}</x-ts-heading>
 
-            <div class="mx-auto mt-3 h-1 w-10 rounded-full bg-(--color-accent)"></div>
+            @if (config(fork.gallery_byline)) {{-- Eugene fork --}}
+                <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400" data-fork-byline>{{ config(fork.gallery_byline) }}</p>
+            @else
+                <div class="mx-auto mt-3 h-1 w-10 rounded-full bg-(--color-accent)"></div>
+            @endif
 
             @if ($gallery->share_description)
                 <x-ts-subheading class="mt-2">
