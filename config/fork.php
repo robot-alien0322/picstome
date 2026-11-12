@@ -16,4 +16,8 @@ return [
 
     // Client page theme: system (follow the visitor), light, or dark. force_light=true still means light.
     'client_theme' => env('PICSTOME_CLIENT_THEME', 'system'),
+
+    // Storage box: for unlimited teams, show the size of the disk holding this path as "Total"
+    // (Garage keeps photos under /var/lib/garage/data on the root disk). Empty = keep "Unlimited".
+    'storage_disk_path' => env('PICSTOME_STORAGE_DISK_PATH', '/'),
 ];

@@ -21,6 +21,14 @@ new class extends Component
         $this->total = $team->storage_limit_gb;
         $this->usage = $team->storage_used_percent;
         $this->hasUnlimitedStorage = $team->hasUnlimitedStorage;
+
+        // Eugene fork: self-hosted "unlimited" teams see the real disk size instead of "Unlimited".
+        $path = config('fork.storage_disk_path');
+        if ($this->hasUnlimitedStorage && $path && ($bytes = @disk_total_space($path))) {
+            $this->total = number_format($bytes / 1073741824, 0).' GB';
+            $this->usage = number_format($team->calculateStorageUsed() / $bytes * 100);
+            $this->hasUnlimitedStorage = false;
+        }
     }
 }; ?>
 
