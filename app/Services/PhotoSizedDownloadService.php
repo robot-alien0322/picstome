@@ -101,7 +101,7 @@ class PhotoSizedDownloadService
         fclose($out);
 
         try {
-            Image::load($source)->fit(Fit::Max, $px, $px)->quality(90)->save($partial);
+            \App\Support\FastResize::toFile($source, $partial, $px, 'jpeg', 90);
             rename($partial, $cached); // atomic: a parallel request never sees a half-written file
         } finally {
             @unlink($source);

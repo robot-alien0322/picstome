@@ -44,6 +44,54 @@ new class extends Component
     /** Eugene fork: heading override, e.g. the set name. */
     public ?string $title = null;
 
+    /** Eugene fork: sets offered on the shared Download tab, as [['id' => .., 'name' => ..], ...]. */
+    public array $sets = [];
+
+    /** Eugene fork: picked set id / size. Changing them re-renders only this panel. */
+    public ?string $pickSet = null;
+
+    public ?string $pickSize = null;
+
+    public function updatedPickSet(): void
+    {
+        $this->applyPick();
+    }
+
+    public function updatedPickSize(): void
+    {
+        $this->applyPick();
+    }
+
+    protected function applyPick(): void
+    {
+        $this->ensureAccess();
+
+        $set = collect($this->sets)->firstWhere('id', (int) $this->pickSet);
+        $size = isset(\App\Services\PhotoSizedDownloadService::SIZES[(string) $this->pickSize]) ? $this->pickSize : null;
+        $this->pickSet = $set ? (string) $set['id'] : null;
+        $this->pickSize = $size;
+
+        $variant = GalleryArchiveService::cleanVariant(($set ? 'set:'.$set['id'] : 'all').($size ? '@'.$size : ''));
+        $service = app(GalleryArchiveService::class);
+        $estimate = $service->estimate($this->gallery, $variant);
+        $media = $service->mediaCounts($this->gallery, $variant);
+
+        $title = $set ? __('Download set: :name', ['name' => $set['name']]) : __('Download gallery');
+        $this->title = $size ? $title.' · '.\App\Services\PhotoSizedDownloadService::label($size) : ($set ? $title : null);
+        $this->variant = $variant;
+        $this->count = $estimate['count'];
+        $this->size = $this->gallery->formatFileSize($estimate['bytes']);
+        $this->imagesCount = $media['images'];
+        $this->videosCount = $media['videos'];
+        $this->pdfsCount = $media['pdfs'];
+        $this->pendingAction = null;
+
+        $this->archiveId = $this->latestArchive()?->id;
+        $this->resetArchiveComputed();
+        $this->archiveStatus = $this->archive?->status;
+        $this->resetErrorBag('archive');
+    }
+
     public ?int $archiveId = null;
 
     public ?string $archiveStatus = null;
@@ -60,6 +108,7 @@ new class extends Component
         bool $shared = false,
         string $variant = 'all',
         ?string $title = null,
+        array $sets = [],
     ): void {
         $this->gallery = $gallery;
         $this->count = $count;
@@ -70,6 +119,7 @@ new class extends Component
         $this->shared = $shared;
         $this->variant = GalleryArchiveService::cleanVariant($variant);
         $this->title = $title;
+        $this->sets = array_values(array_map(fn ($s) => ['id' => (int) $s['id'], 'name' => (string) $s['name']], $sets));
 
         $this->ensureAccess();
 
@@ -318,6 +368,40 @@ new class extends Component
     @endif
     class="mx-auto max-w-3xl space-y-5 py-8"
 >
+    {{-- Eugene fork: pick a set and a size (only this panel re-renders) --}}
+    @if ($shared)
+        <div class="space-y-3" data-download-pickers>
+            @if (count($sets))
+                <div class="flex flex-wrap justify-center gap-2" data-download-sets>
+                    <button type="button" wire:click="$set('pickSet', null)"
+                        @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => ! $pickSet, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $pickSet])>
+                        {{ __('Full gallery') }}
+                    </button>
+                    @foreach ($sets as $s)
+                        <button type="button" wire:key="dl-set-{{ $s['id'] }}" wire:click="$set('pickSet', '{{ $s['id'] }}')"
+                            @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => $pickSet === (string) $s['id'], 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $pickSet !== (string) $s['id']])>
+                            {{ $s['name'] }}
+                        </button>
+                    @endforeach
+                </div>
+            @endif
+            <div class="flex flex-wrap items-center justify-center gap-2" data-download-sizes>
+                <span class="mr-1 text-sm text-zinc-500 dark:text-white/60">{{ __('Size') }}:</span>
+                <button type="button" wire:click="$set('pickSize', null)"
+                    @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => ! $pickSize, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $pickSize])>
+                    {{ __('Original') }}
+                </button>
+                @foreach (\App\Services\PhotoSizedDownloadService::SIZES as $sizeKey => $sizePx)
+                    <button type="button" wire:key="dl-size-{{ $sizeKey }}" wire:click="$set('pickSize', '{{ $sizeKey }}')"
+                        @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => $pickSize === $sizeKey, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $pickSize !== $sizeKey])>
+                        {{ \App\Services\PhotoSizedDownloadService::label($sizeKey) }}
+                    </button>
+                @endforeach
+            </div>
+        </div>
+    @endif
+
+    <div class="space-y-5" wire:loading.class="opacity-60">
     <x-ts-callout variant="secondary" icon="information-circle">
         <x-ts-callout-heading>{{ $title ?: __('Download gallery') }}</x-ts-callout-heading>
         <x-ts-callout-text>
@@ -605,4 +689,5 @@ new class extends Component
             </div>
         </div>
     </x-ts-modal>
+    </div>{{-- /Eugene fork wrapper --}}
 </div>

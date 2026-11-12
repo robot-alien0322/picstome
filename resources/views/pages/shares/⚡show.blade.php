@@ -32,38 +32,6 @@ new #[Layout('layouts.guest')] class extends Component
     #[Url]
     public ?string $set = null;
 
-    /** Eugene fork: set chosen on the Download tab (null = full gallery). */
-    public ?string $downloadSet = null;
-
-    /** Eugene fork: ZIP size chosen on the Download tab (null = original). */
-    public ?string $downloadSize = null;
-
-    /** Eugene fork: panel data for the chosen set/size, or null for the full gallery at original size. */
-    public function downloadInfo(): ?array
-    {
-        $gallerySet = $this->downloadSet ? $this->gallerySets->firstWhere('id', (int) $this->downloadSet) : null;
-        $size = isset(\App\Services\PhotoSizedDownloadService::SIZES[(string) $this->downloadSize]) ? $this->downloadSize : null;
-
-        if (! $gallerySet && ! $size) {
-            return null;
-        }
-
-        $variant = ($gallerySet ? 'set:'.$gallerySet->id : 'all').($size ? '@'.$size : '');
-        $estimate = app(\App\Services\GalleryArchiveService::class)->estimate($this->gallery, $variant);
-        $photos = ($gallerySet ? $gallerySet->photos() : $this->gallery->photos())->ready()->get(['id', 'name', 'path']);
-        $title = $gallerySet ? __('Download set: :name', ['name' => $gallerySet->name]) : __('Download gallery');
-
-        return [
-            'variant' => $variant,
-            'title' => $size ? $title.' · '.\App\Services\PhotoSizedDownloadService::label($size) : $title,
-            'count' => $estimate['count'],
-            'size' => $this->gallery->formatFileSize($estimate['bytes']),
-            'images' => $photos->filter->isImage()->count(),
-            'videos' => $photos->filter->isVideo()->count(),
-            'pdfs' => $photos->filter->isPdf()->count(),
-        ];
-    }
-
     /**
      * Whether the photographer is currently routing camera uploads here.
      * The client page only polls for new photos while this is true.
@@ -401,63 +369,17 @@ new #[Layout('layouts.guest')] class extends Component
             @if ($gallery->is_share_downloadable)
             <div x-show="$wire.activeTab === 'download'" class="pt-1" data-gallery-panel>
                     <div class="mx-auto w-full max-w-7xl px-4 lg:px-8">
-                        {{-- Eugene fork: download the full gallery or one set --}}
-                        @if ($this->gallerySets->isNotEmpty())
-                            <div class="mb-6 flex flex-wrap justify-center gap-2" data-download-sets>
-                                <button type="button" wire:click="$set('downloadSet', null)"
-                                    @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => ! $downloadSet, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $downloadSet])>
-                                    {{ __('Full gallery') }}
-                                </button>
-                                @foreach ($this->gallerySets as $gallerySet)
-                                    <button type="button" wire:key="download-set-pill-{{ $gallerySet->id }}" wire:click="$set('downloadSet', '{{ $gallerySet->id }}')"
-                                        @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => $downloadSet === (string) $gallerySet->id, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $downloadSet !== (string) $gallerySet->id])>
-                                        {{ $gallerySet->name }}
-                                    </button>
-                                @endforeach
-                            </div>
-                        @endif
-
-                        {{-- Eugene fork: ZIP size --}}
-                        <div class="mb-6 flex flex-wrap items-center justify-center gap-2" data-download-sizes>
-                            <span class="mr-1 text-sm text-zinc-500 dark:text-white/60">{{ __('Size') }}:</span>
-                            <button type="button" wire:click="$set('downloadSize', null)"
-                                @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => ! $downloadSize, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $downloadSize])>
-                                {{ __('Original') }}
-                            </button>
-                            @foreach (\App\Services\PhotoSizedDownloadService::SIZES as $sizeKey => $sizePx)
-                                <button type="button" wire:key="download-size-pill-{{ $sizeKey }}" wire:click="$set('downloadSize', '{{ $sizeKey }}')"
-                                    @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => $downloadSize === $sizeKey, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $downloadSize !== $sizeKey])>
-                                    {{ \App\Services\PhotoSizedDownloadService::label($sizeKey) }}
-                                </button>
-                            @endforeach
-                        </div>
-
-                        @php($setInfo = $this->downloadInfo())
-                        @if ($setInfo)
-                            <livewire:gallery-download-panel
-                                :$gallery
-                                :count="$setInfo['count']"
-                                :size="$setInfo['size']"
-                                :images-count="$setInfo['images']"
-                                :videos-count="$setInfo['videos']"
-                                :pdfs-count="$setInfo['pdfs']"
-                                :shared="true"
-                                :variant="$setInfo['variant']"
-                                :title="$setInfo['title']"
-                                :key="'download-panel-'.$gallery->id.'-'.$setInfo['variant']"
-                            />
-                        @else
-                            <livewire:gallery-download-panel
-                                :$gallery
-                                :count="$this->totalPhotos"
-                                :size="$this->formattedDownloadSize()"
-                                :images-count="$this->mediaCounts['images']"
-                                :videos-count="$this->mediaCounts['videos']"
-                                :pdfs-count="$this->mediaCounts['pdfs']"
-                                :shared="true"
-                                :key="'download-panel-'.$gallery->id"
-                            />
-                        @endif
+                        <livewire:gallery-download-panel
+                            :$gallery
+                            :count="$this->totalPhotos"
+                            :size="$this->formattedDownloadSize()"
+                            :images-count="$this->mediaCounts['images']"
+                            :videos-count="$this->mediaCounts['videos']"
+                            :pdfs-count="$this->mediaCounts['pdfs']"
+                            :shared="true"
+                            :sets="$this->gallerySets->map(fn ($s) => ['id' => $s->id, 'name' => $s->name])->values()->all()"
+                            :key="'download-panel-'.$gallery->id"
+                        />
                     </div>
                 </div>
             @endif

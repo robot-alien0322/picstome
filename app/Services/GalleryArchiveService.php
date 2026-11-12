@@ -168,6 +168,18 @@ class GalleryArchiveService
      *
      * @param  iterable<int, Photo>  $photos
      */
+    /** Eugene fork: images/videos/PDFs in a variant (for the Download tab). */
+    public function mediaCounts(Gallery $gallery, string $variant = 'all'): array
+    {
+        $photos = $this->photosQuery($gallery, $this->normalizeVariant($variant))->get(['id', 'name', 'path']);
+
+        return [
+            'images' => $photos->filter->isImage()->count(),
+            'videos' => $photos->filter->isVideo()->count(),
+            'pdfs' => $photos->filter->isPdf()->count(),
+        ];
+    }
+
     /** Eugene fork: rough size of a resized ZIP (pixel ratio x ~0.5 for re-encoding at q90). */
     protected function estimatedSizedBytes(iterable $photos, string $size): int
     {

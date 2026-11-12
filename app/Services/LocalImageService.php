@@ -72,7 +72,7 @@ class LocalImageService
         fclose($out);
 
         try {
-            Image::load($source)->fit(Fit::Max, $box, $box)->quality(90)->save($partial);
+            \App\Support\FastResize::toFile($source, $partial, $box, 'webp', 90);
             rename($partial, $cached);
         } finally {
             @unlink($source);
