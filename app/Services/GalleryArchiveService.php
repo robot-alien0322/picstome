@@ -477,6 +477,8 @@ class GalleryArchiveService
      */
     public function invalidate(Gallery $gallery, array $variants = ['all']): void
     {
+        // Eugene fork: anything that invalidates "all" also invalidates the per-set ZIPs.
+        $includeSets = in_array('all', $variants, true);
         $variants = array_values(array_intersect($variants, self::VARIANTS));
 
         if ($variants === []) {
@@ -484,7 +486,13 @@ class GalleryArchiveService
         }
 
         $archives = $gallery->archives()
-            ->whereIn('variant', $variants)
+            ->where(function ($query) use ($variants, $includeSets) {
+                $query->whereIn('variant', $variants);
+
+                if ($includeSets) {
+                    $query->orWhere('variant', 'like', 'set:%');
+                }
+            })
             ->whereIn('status', ['pending', 'building', 'ready'])
             ->get();
 
@@ -520,6 +528,12 @@ class GalleryArchiveService
     public function filename(Gallery $gallery, string $variant = 'all'): string
     {
         $base = Str::slug($gallery->name) ?: 'gallery-'.$gallery->ulid;
+
+        if ($setId = self::setIdFromVariant($variant)) {
+            $setName = $gallery->sets()->whereKey($setId)->value('name');
+
+            return $base.'-'.(Str::slug((string) $setName) ?: 'set-'.$setId).'.zip';
+        }
 
         return $base.($variant === 'favorites' ? '-favorites' : '').'.zip';
     }
@@ -1029,12 +1043,27 @@ class GalleryArchiveService
 
     protected function photosQuery(Gallery $gallery, string $variant): HasMany
     {
+        // Eugene fork: "set:<id>" = one gallery set
+        if ($setId = self::setIdFromVariant($variant)) {
+            return $gallery->photos()->where('gallery_set_id', $setId)->ready();
+        }
+
         return ($variant === 'favorites' ? $gallery->favorites() : $gallery->photos())->ready();
     }
 
     protected function normalizeVariant(string $variant): string
     {
+        if (self::setIdFromVariant($variant)) {
+            return $variant;
+        }
+
         return $variant === 'favorites' ? 'favorites' : 'all';
+    }
+
+    /** Eugene fork: the set id in a "set:<id>" variant, or null. */
+    public static function setIdFromVariant(?string $variant): ?int
+    {
+        return $variant && preg_match('/^set:(\d{1,15})$/', $variant, $m) ? (int) $m[1] : null;
     }
 
     protected function isStale(GalleryArchive $archive): bool

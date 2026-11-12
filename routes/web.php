@@ -55,6 +55,12 @@ Route::get('/shares/{gallery:ulid}/photos/{photo}/download', function (Gallery $
 
     abort_unless($gallery->is_share_downloadable, 401);
 
+    // Eugene fork: ?size=high|medium|low serves a resized copy (Zenfolio-style sizes).
+    $size = request()->input('size');
+    if (is_string($size) && isset(\App\Services\PhotoSizedDownloadService::SIZES[$size]) && $photo->isImage() && $photo->path) {
+        return app(\App\Services\PhotoSizedDownloadService::class)->download($photo, $size);
+    }
+
     $type = request()->input('type') === 'raw' ? 'raw' : 'processed';
 
     return app(PhotoDownloadService::class)->download($photo, $type);

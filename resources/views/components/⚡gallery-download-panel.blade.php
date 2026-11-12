@@ -41,6 +41,9 @@ new class extends Component
 
     public string $variant = 'all';
 
+    /** Eugene fork: heading override, e.g. the set name. */
+    public ?string $title = null;
+
     public ?int $archiveId = null;
 
     public ?string $archiveStatus = null;
@@ -56,6 +59,7 @@ new class extends Component
         int $pdfsCount = 0,
         bool $shared = false,
         string $variant = 'all',
+        ?string $title = null,
     ): void {
         $this->gallery = $gallery;
         $this->count = $count;
@@ -64,7 +68,8 @@ new class extends Component
         $this->videosCount = $videosCount;
         $this->pdfsCount = $pdfsCount;
         $this->shared = $shared;
-        $this->variant = $variant === 'favorites' ? 'favorites' : 'all';
+        $this->variant = GalleryArchiveService::setIdFromVariant($variant) ? $variant : ($variant === 'favorites' ? 'favorites' : 'all');
+        $this->title = $title;
 
         $this->ensureAccess();
 
@@ -314,7 +319,7 @@ new class extends Component
     class="mx-auto max-w-3xl space-y-5 py-8"
 >
     <x-ts-callout variant="secondary" icon="information-circle">
-        <x-ts-callout-heading>{{ __('Download gallery') }}</x-ts-callout-heading>
+        <x-ts-callout-heading>{{ $title ?: __('Download gallery') }}</x-ts-callout-heading>
         <x-ts-callout-text>
             @if ($shared)
                 <p>

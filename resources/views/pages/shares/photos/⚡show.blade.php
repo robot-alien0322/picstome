@@ -812,22 +812,33 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                 @endif
 
                 @if ($this->photo->gallery->is_share_downloadable)
-                    @if ($photo->path && $photo->raw_path)
+                    {{-- Eugene fork: Original + High/Medium/Low sizes (only sizes smaller than the photo) --}}
+                    @php($sizeOptions = \App\Services\PhotoSizedDownloadService::sizesFor($photo))
+                    @if (($photo->path && $photo->raw_path) || $sizeOptions)
                         <x-dropdown position="bottom-end">
                             <x-slot:action>
                                 <x-ts-button icon="cloud-arrow-down" size="sm" variant="primary" square x-on:click="show = ! show" />
                             </x-slot:action>
 
                             <x-dropdown.items
-                                :text="__('Download JPG')"
+                                :text="$sizeOptions ? __('Original').(max((int) $photo->width, (int) $photo->height) ? ' ('.max((int) $photo->width, (int) $photo->height).' px)' : '') : __('Download JPG')"
                                 icon="cloud-arrow-down"
                                 :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'jpg'])"
                             />
-                            <x-dropdown.items
-                                :text="__('Download Raw')"
-                                icon="cloud-arrow-down"
-                                :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'raw'])"
-                            />
+                            @foreach ($sizeOptions as $sizeKey => $sizePx)
+                                <x-dropdown.items
+                                    :text="\App\Services\PhotoSizedDownloadService::label($sizeKey)"
+                                    icon="cloud-arrow-down"
+                                    :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'size' => $sizeKey])"
+                                />
+                            @endforeach
+                            @if ($photo->path && $photo->raw_path)
+                                <x-dropdown.items
+                                    :text="__('Download Raw')"
+                                    icon="cloud-arrow-down"
+                                    :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'raw'])"
+                                />
+                            @endif
                         </x-dropdown>
                     @else
                         <x-ts-button
