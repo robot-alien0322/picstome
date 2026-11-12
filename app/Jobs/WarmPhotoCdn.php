@@ -44,6 +44,14 @@ class WarmPhotoCdn implements ShouldQueue
             return;
         }
 
+        // Eugene fork: with local images, render the grid/viewer sizes here (no HTTP round trip)
+        if (config('fork.local_images')) {
+            app(\App\Services\LocalImageService::class)->warm($media);
+            $this->markProcessed($media);
+
+            return;
+        }
+
         $urls = array_values(array_unique(array_filter([
             PhotoUrlService::make($media)->smallThumbnail(),
             PhotoUrlService::make($media)->thumbnail(),

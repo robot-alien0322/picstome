@@ -20,4 +20,7 @@ return [
     // Storage box: for unlimited teams, show the size of the disk holding this path as "Total"
     // (Garage keeps photos under /var/lib/garage/data on the root disk). Empty = keep "Unlimited".
     'storage_disk_path' => env('PICSTOME_STORAGE_DISK_PATH', '/'),
+
+    // Resize grid/viewer images on this server (/img/...) instead of the external CDN (wsrv.nl).
+    'local_images' => (bool) env('PICSTOME_LOCAL_IMAGES', false),
 ];

@@ -48,6 +48,23 @@ Route::get('/shares/{gallery:ulid}/download/{archive:ulid}', [SharedGalleryDownl
 
 Route::livewire('/shares/{gallery:ulid}/photos/{photo}', 'pages::shares.photos.show')->name('shares.photos.show')->middleware([PasswordProtectGallery::class]);
 
+// Eugene fork: local image resizing (replaces the external wsrv.nl CDN when PICSTOME_LOCAL_IMAGES=true).
+// Only real photo files, only the app's box sizes; same secrecy as the /media/ URLs (unguessable paths).
+Route::get('/img/{path}', function (string $path) {
+    $box = (int) request()->query('s');
+    abort_unless(config('fork.local_images') && in_array($box, \App\Services\LocalImageService::boxes(), true), 404);
+
+    $photo = Photo::query()->where('path', $path)->first(['id', 'path', 'disk']);
+    abort_unless($photo && $photo->isImage(), 404);
+
+    $file = app(\App\Services\LocalImageService::class)->cachedPath($photo->path, $box, $photo->diskOrDefault());
+
+    return response()->file($file, [
+        'Content-Type' => 'image/webp',
+        'Cache-Control' => 'public, max-age=31536000, immutable',
+    ]);
+})->where('path', 'teams/.+')->name('fork.image');
+
 Route::get('/shares/{gallery:ulid}/photos/{photo}/download', function (Gallery $gallery, Photo $photo) {
     abort_unless($gallery->is_shared, 404);
 

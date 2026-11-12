@@ -220,6 +220,11 @@ class PhotoUrlService
 
     protected function cdn(array $params): string
     {
+        // Eugene fork: resize locally instead of the external CDN for plain boxes
+        if (config('fork.local_images') && \App\Services\LocalImageService::handles($params)) {
+            return \App\Services\LocalImageService::url($this->path, (int) $params['w'], $this->version);
+        }
+
         $originalUrl = $this->storageUrl($this->path);
         $cdn = config('picstome.photo_cdn_domain', 'wsrv.nl');
 

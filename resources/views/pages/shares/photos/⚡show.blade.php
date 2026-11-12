@@ -570,7 +570,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                     src="{{ $photo->thumbnail_url }}"
                     srcset="{{ $photo->thumbnail_url }} 1000w, {{ $photo->large_thumbnail_url }} 2040w"
                     sizes="(max-width: 640px) 100vw, 80vw"
-                    style="background-image: url('{{ $photo->small_thumbnail_url }}'); background-size: cover; background-repeat: no-repeat; background-position: center;"
+                    style="background-image: url('{{ $photo->small_thumbnail_url }}'); background-size: contain; background-repeat: no-repeat; background-position: center;"
                     x-data="{ loaded: false, errored: false }"
                     x-init="
                         if ($el.complete) {
@@ -591,13 +591,13 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                     x-on:error="errored = true"
                     @click="if (!isMobile()) toggleZoom()"
                     @contextmenu.prevent
-                    :class="loaded || errored ? '' : 'animate-pulse bg-black/60 dark:bg-white/60'"
+                    {{-- Eugene fork: preview keeps the photo's shape and doesn't pulse (no "breathing") --}}
                     class="mx-auto h-full w-full max-w-full object-contain {{ config('fork.website_style') ? '' : 'hover:cursor-zoom-in' }}"
                     alt="{{ $photo->name }}"
                 />
                 <img
                     src="{{ $photo->url }}"
-                    style="background-image: url('{{ $photo->small_thumbnail_url }}'); background-size: cover; background-repeat: no-repeat; background-position: center;"
+                    style="background-image: url('{{ $photo->small_thumbnail_url }}'); background-size: contain; background-repeat: no-repeat; background-position: center;"
                     x-data="{ loaded: false, errored: false }"
                     x-init="if ($el.complete) { loaded = true; $el.style.backgroundImage = 'none' }"
                     x-show="zoom"
@@ -607,7 +607,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                     x-on:error="errored = true"
                     @click="if (!isMobile()) resetZoom()"
                     @contextmenu.prevent
-                    :class="loaded || errored ? '' : 'animate-pulse bg-black/60 dark:bg-white/60'"
+                    loading="lazy"
                     class="mx-auto max-h-full max-w-full object-contain hover:cursor-zoom-out"
                     alt="{{ $photo->name }}"
                     x-cloak
