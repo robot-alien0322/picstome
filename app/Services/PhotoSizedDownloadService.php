@@ -109,21 +109,40 @@ class PhotoSizedDownloadService
         }
     }
 
-    /** At most once an hour, drop cached copies older than a week. */
+    /**
+     * At most once a day, drop copies of photos that were deleted or re-processed (the file
+     * name carries the photo id and a hash of its path + updated_at). Current copies stay,
+     * since they are pre-rendered after upload so sized downloads never wait.
+     */
     protected function prune(string $dir): void
     {
         $marker = $dir.'/.pruned';
 
-        if (is_file($marker) && filemtime($marker) > time() - 3600) {
+        if (is_file($marker) && filemtime($marker) > time() - 86400) {
             return;
         }
 
         @touch($marker);
 
+        $current = [];
+        foreach (Photo::query()->whereNotNull('path')->get(['id', 'path', 'updated_at']) as $photo) {
+            $current[$photo->id] = substr(sha1($photo->path.'|'.$photo->updated_at), 0, 12);
+        }
+
         foreach (glob($dir.'/*.jpg') ?: [] as $file) {
-            if (filemtime($file) < time() - self::CACHE_DAYS * 86400) {
+            if (preg_match('/^(\d+)-[a-z]+-([0-9a-f]{12})\.jpg$/', basename($file), $m)
+                && ($current[(int) $m[1]] ?? null) !== $m[2]
+                && filemtime($file) < time() - 3600) {
                 @unlink($file);
             }
+        }
+    }
+
+    /** Make High/Medium/Low for one photo (skips sizes the photo is already smaller than). */
+    public function renderAll(Photo $photo): void
+    {
+        foreach (array_keys(self::sizesFor($photo)) as $size) {
+            $this->resizedPath($photo, $size);
         }
     }
 }

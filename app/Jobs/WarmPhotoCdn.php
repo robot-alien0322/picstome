@@ -49,6 +49,11 @@ class WarmPhotoCdn implements ShouldQueue
             app(\App\Services\LocalImageService::class)->warm($media);
             $this->markProcessed($media);
 
+            // and the download sizes, as a separate job so the photo shows up right away
+            if ($media instanceof Photo) {
+                RenderDownloadSizes::dispatch($media->id);
+            }
+
             return;
         }
 
