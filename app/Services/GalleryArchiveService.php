@@ -699,7 +699,9 @@ class GalleryArchiveService
      */
     protected function addEntriesSequentially(ZipStream $zip, GalleryArchive $archive, array &$usedNames, array &$counts): bool
     {
-        $photos = $this->photosQuery($archive->gallery, $archive->variant)->orderBy('id')->cursor();
+        // Eugene fork: lazyById (finished chunk queries) instead of cursor(): an open SQLite read
+        // can't upgrade to the progress writes below while another queue worker is writing.
+        $photos = $this->photosQuery($archive->gallery, $archive->variant)->lazyById(200);
         $index = 0;
         $updatedAt = microtime(true);
 
