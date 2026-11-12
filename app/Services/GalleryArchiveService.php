@@ -10,6 +10,7 @@ use App\Models\Photo;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\File;
+use Illuminate\Support\Facades\Concurrency;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -168,6 +169,51 @@ class GalleryArchiveService
      *
      * @param  iterable<int, Photo>  $photos
      */
+    /**
+     * Eugene fork: render the resized copies for a sized ZIP using several processes
+     * (one 33 MP resize keeps a core busy for ~1 s). Small batches so cancellation is
+     * noticed and no process gets near the 60 s process timeout. Anything that fails here
+     * is simply resized again by the packing loop.
+     */
+    protected function prerenderSizes(GalleryArchive $archive, string $size): bool
+    {
+        $ids = $this->photosQuery($archive->gallery, $archive->variant)->orderBy('id')->pluck('id')->all();
+        $workers = max(1, (int) config('picstome.gallery_archives.resize_workers', 3));
+
+        foreach (array_chunk($ids, $workers * 12) as $batch) {
+            if (! $this->isArchiveStillBuilding($archive)) {
+                return false;
+            }
+
+            $tasks = [];
+
+            foreach (array_chunk($batch, (int) ceil(count($batch) / $workers)) as $part) {
+                $tasks[] = static function () use ($part, $size) {
+                    foreach (\App\Models\Photo::query()->whereIn('id', $part)->get() as $photo) {
+                        try {
+                            app(\App\Services\PhotoSizedDownloadService::class)->resizedPath($photo, $size);
+                        } catch (\Throwable) {
+                            // the packing loop retries
+                        }
+                    }
+
+                    return count($part);
+                };
+            }
+
+            try {
+                Concurrency::run($tasks);
+            } catch (Throwable $exception) {
+                Log::warning('Parallel resize for a sized ZIP failed; packing will resize serially.', [
+                    'archive_id' => $archive->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        return true;
+    }
+
     /** Eugene fork: images/videos/PDFs in a variant (for the Download tab). */
     public function mediaCounts(Gallery $gallery, string $variant = 'all'): array
     {
@@ -711,6 +757,11 @@ class GalleryArchiveService
      */
     protected function addEntriesSequentially(ZipStream $zip, GalleryArchive $archive, array &$usedNames, array &$counts): bool
     {
+        // Eugene fork: sized ZIPs - resize in parallel processes first; the loop below then just packs.
+        if (($size = self::sizeFromVariant($archive->variant)) && ! $this->prerenderSizes($archive, $size)) {
+            return false;
+        }
+
         // Eugene fork: lazyById (finished chunk queries) instead of cursor(): an open SQLite read
         // can't upgrade to the progress writes below while another queue worker is writing.
         $photos = $this->photosQuery($archive->gallery, $archive->variant)->lazyById(200);
