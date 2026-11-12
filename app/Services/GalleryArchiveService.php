@@ -127,7 +127,7 @@ class GalleryArchiveService
                     'updated_at' => $photo->updated_at?->toIso8601String(),
                 ];
 
-                if ($variant === 'favorites') {
+                if (self::splitVariant($variant)[0] === 'favorites') {
                     $data['favorited_at'] = $photo->favorited_at?->toIso8601String();
                 }
 
@@ -151,12 +151,14 @@ class GalleryArchiveService
     public function estimate(Gallery $gallery, string $variant = 'all'): array
     {
         $photos = $this->photosQuery($gallery, $this->normalizeVariant($variant))
-            ->select(['id', 'path', 'raw_path', 'thumb_path', 'disk', 'size', 'stored_size'])
+            ->select(['id', 'path', 'raw_path', 'thumb_path', 'disk', 'size', 'stored_size', 'width', 'height'])
             ->get();
+
+        $size = self::sizeFromVariant($variant);
 
         return [
             'count' => $photos->count(),
-            'bytes' => $this->estimatedSizeForPhotos($photos),
+            'bytes' => $size ? $this->estimatedSizedBytes($photos, $size) : $this->estimatedSizeForPhotos($photos),
         ];
     }
 
@@ -166,6 +168,24 @@ class GalleryArchiveService
      *
      * @param  iterable<int, Photo>  $photos
      */
+    /** Eugene fork: rough size of a resized ZIP (pixel ratio x ~0.5 for re-encoding at q90). */
+    protected function estimatedSizedBytes(iterable $photos, string $size): int
+    {
+        $px = PhotoSizedDownloadService::SIZES[$size];
+        $total = 0;
+
+        foreach ($photos as $photo) {
+            $bytes = $this->estimatedSizeForPhoto($photo);
+            $long = max((int) $photo->width, (int) $photo->height);
+
+            $total += ($photo->isImage() && $long > $px)
+                ? (int) ($bytes * ($px / $long) ** 2 * 0.5)
+                : $bytes;
+        }
+
+        return $total;
+    }
+
     public function estimatedSizeForPhotos(iterable $photos): int
     {
         $bytes = 0;
@@ -489,6 +509,10 @@ class GalleryArchiveService
             ->where(function ($query) use ($variants, $includeSets) {
                 $query->whereIn('variant', $variants);
 
+                foreach ($variants as $variant) {
+                    $query->orWhere('variant', 'like', $variant.'@%'); // sized ZIPs
+                }
+
                 if ($includeSets) {
                     $query->orWhere('variant', 'like', 'set:%');
                 }
@@ -528,20 +552,22 @@ class GalleryArchiveService
     public function filename(Gallery $gallery, string $variant = 'all'): string
     {
         $base = Str::slug($gallery->name) ?: 'gallery-'.$gallery->ulid;
+        [$baseVariant, $size] = self::splitVariant($variant);
+        $suffix = $size ? '-'.$size : '';
 
-        if ($setId = self::setIdFromVariant($variant)) {
+        if ($setId = self::setIdFromVariant($baseVariant)) {
             $setName = $gallery->sets()->whereKey($setId)->value('name');
 
-            return $base.'-'.(Str::slug((string) $setName) ?: 'set-'.$setId).'.zip';
+            return $base.'-'.(Str::slug((string) $setName) ?: 'set-'.$setId).$suffix.'.zip';
         }
 
-        return $base.($variant === 'favorites' ? '-favorites' : '').'.zip';
+        return $base.($baseVariant === 'favorites' ? '-favorites' : '').$suffix.'.zip';
     }
 
     /**
      * @param  array<int, string>  $usedNames
      */
-    protected function addPhotoToZip(ZipStream $zip, Photo $photo, array &$usedNames): string
+    protected function addPhotoToZip(ZipStream $zip, Photo $photo, array &$usedNames, ?string $size = null): string
     {
         if ($photo->isVideo()) {
             $type = 'video';
@@ -559,6 +585,22 @@ class GalleryArchiveService
 
         $entryName = $this->uniqueEntryName($entryName, $usedNames);
         $stream = null;
+
+        // Eugene fork: sized ZIPs use the resized copy (photos already small enough stay original).
+        if ($size && $type === 'image') {
+            try {
+                if ($resized = app(PhotoSizedDownloadService::class)->resizedPath($photo, $size)) {
+                    $zip->addFileFromPath($entryName, $resized);
+
+                    return $type;
+                }
+            } catch (Throwable $exception) {
+                Log::warning('Gallery archive could not resize a photo; using the original.', [
+                    'photo_id' => $photo->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
 
         try {
             $stream = Storage::disk($photo->diskOrDefault())->readStream($photo->path);
@@ -611,7 +653,7 @@ class GalleryArchiveService
 
             $entries = $this->archiveEntries($archive);
 
-            if ($this->canDownloadInParallel($entries)) {
+            if (! self::sizeFromVariant($archive->variant) && $this->canDownloadInParallel($entries)) {
                 $counts['skipped'] = max(0, (int) $archive->photos_total - count($entries));
                 $completed = $this->addEntriesInParallel(
                     $zip,
@@ -668,7 +710,7 @@ class GalleryArchiveService
                 return false;
             }
 
-            $result = $this->addPhotoToZip($zip, $photo, $usedNames);
+            $result = $this->addPhotoToZip($zip, $photo, $usedNames, self::sizeFromVariant($archive->variant));
 
             if ($result === 'skipped') {
                 $counts['skipped']++;
@@ -1043,27 +1085,56 @@ class GalleryArchiveService
 
     protected function photosQuery(Gallery $gallery, string $variant): HasMany
     {
+        [$base] = self::splitVariant($variant);
+
         // Eugene fork: "set:<id>" = one gallery set
-        if ($setId = self::setIdFromVariant($variant)) {
+        if ($setId = self::setIdFromVariant($base)) {
             return $gallery->photos()->where('gallery_set_id', $setId)->ready();
         }
 
-        return ($variant === 'favorites' ? $gallery->favorites() : $gallery->photos())->ready();
+        return ($base === 'favorites' ? $gallery->favorites() : $gallery->photos())->ready();
     }
 
     protected function normalizeVariant(string $variant): string
     {
-        if (self::setIdFromVariant($variant)) {
-            return $variant;
-        }
-
-        return $variant === 'favorites' ? 'favorites' : 'all';
+        return self::cleanVariant($variant);
     }
 
-    /** Eugene fork: the set id in a "set:<id>" variant, or null. */
+    /**
+     * Eugene fork: variants are "all", "favorites" or "set:<id>", optionally with a
+     * download size suffix: "all@low", "set:15@medium" (sizes from PhotoSizedDownloadService).
+     */
+    public static function cleanVariant(?string $variant): string
+    {
+        [$base, $size] = self::splitVariant($variant);
+        $base = self::setIdFromVariant($base) ? $base : ($base === 'favorites' ? 'favorites' : 'all');
+
+        return $size ? $base.'@'.$size : $base;
+    }
+
+    /** @return array{0: string, 1: ?string} [base variant, size or null] */
+    public static function splitVariant(?string $variant): array
+    {
+        $variant = (string) $variant;
+
+        if (preg_match('/^(.+)@([a-z]+)$/', $variant, $m) && isset(PhotoSizedDownloadService::SIZES[$m[2]])) {
+            return [$m[1], $m[2]];
+        }
+
+        return [$variant, null];
+    }
+
+    /** Eugene fork: the set id in a "set:<id>[@size]" variant, or null. */
     public static function setIdFromVariant(?string $variant): ?int
     {
-        return $variant && preg_match('/^set:(\d{1,15})$/', $variant, $m) ? (int) $m[1] : null;
+        [$base] = self::splitVariant($variant);
+
+        return $base !== '' && preg_match('/^set:(\d{1,15})$/', $base, $m) ? (int) $m[1] : null;
+    }
+
+    public static function sizeFromVariant(?string $variant): ?string
+    {
+        return self::splitVariant($variant)[1];
     }
 
     protected function isStale(GalleryArchive $archive): bool

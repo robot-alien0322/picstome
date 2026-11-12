@@ -13,9 +13,12 @@
         <link rel="manifest" href="/site-b.webmanifest" />
 
         @if (! empty((string) ($font ?? '')))
+            {{-- Eugene fork: preconnect + display=optional so text never re-flows when the font arrives --}}
+            <link rel="preconnect" href="https://fonts.googleapis.com" />
+            <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
             <link
                 rel="stylesheet"
-                href="https://fonts.googleapis.com/css2?family={{ str()->of($font)->replace(' ', '+') }}:ital,wght@0,400..900;1,400..900&display=swap"
+                href="https://fonts.googleapis.com/css2?family={{ str()->of($font)->replace(' ', '+') }}:ital,wght@0,400..900;1,400..900&display=optional"
             />
             <style>
                 html,

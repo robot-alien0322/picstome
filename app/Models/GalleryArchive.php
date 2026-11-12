@@ -111,6 +111,6 @@ class GalleryArchive extends Model
 
     public function isFavorites(): bool
     {
-        return $this->variant === 'favorites';
+        return str_starts_with((string) $this->variant, 'favorites'); // Eugene fork: also favorites@<size>
     }
 }

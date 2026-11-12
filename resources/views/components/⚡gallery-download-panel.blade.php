@@ -68,7 +68,7 @@ new class extends Component
         $this->videosCount = $videosCount;
         $this->pdfsCount = $pdfsCount;
         $this->shared = $shared;
-        $this->variant = GalleryArchiveService::setIdFromVariant($variant) ? $variant : ($variant === 'favorites' ? 'favorites' : 'all');
+        $this->variant = GalleryArchiveService::cleanVariant($variant);
         $this->title = $title;
 
         $this->ensureAccess();

@@ -35,22 +35,27 @@ new #[Layout('layouts.guest')] class extends Component
     /** Eugene fork: set chosen on the Download tab (null = full gallery). */
     public ?string $downloadSet = null;
 
-    /** Eugene fork: count/size/media of the set picked on the Download tab, or null for the full gallery. */
-    public function downloadSetInfo(): ?array
+    /** Eugene fork: ZIP size chosen on the Download tab (null = original). */
+    public ?string $downloadSize = null;
+
+    /** Eugene fork: panel data for the chosen set/size, or null for the full gallery at original size. */
+    public function downloadInfo(): ?array
     {
         $gallerySet = $this->downloadSet ? $this->gallerySets->firstWhere('id', (int) $this->downloadSet) : null;
+        $size = isset(\App\Services\PhotoSizedDownloadService::SIZES[(string) $this->downloadSize]) ? $this->downloadSize : null;
 
-        if (! $gallerySet) {
+        if (! $gallerySet && ! $size) {
             return null;
         }
 
-        $variant = 'set:'.$gallerySet->id;
+        $variant = ($gallerySet ? 'set:'.$gallerySet->id : 'all').($size ? '@'.$size : '');
         $estimate = app(\App\Services\GalleryArchiveService::class)->estimate($this->gallery, $variant);
-        $photos = $gallerySet->photos()->ready()->get(['id', 'name', 'path']);
+        $photos = ($gallerySet ? $gallerySet->photos() : $this->gallery->photos())->ready()->get(['id', 'name', 'path']);
+        $title = $gallerySet ? __('Download set: :name', ['name' => $gallerySet->name]) : __('Download gallery');
 
         return [
             'variant' => $variant,
-            'title' => __('Download set: :name', ['name' => $gallerySet->name]),
+            'title' => $size ? $title.' · '.\App\Services\PhotoSizedDownloadService::label($size) : $title,
             'count' => $estimate['count'],
             'size' => $this->gallery->formatFileSize($estimate['bytes']),
             'images' => $photos->filter->isImage()->count(),
@@ -296,7 +301,7 @@ new #[Layout('layouts.guest')] class extends Component
         <div class="mx-auto w-full max-w-5xl px-4 py-8 text-center">
             {{-- Eugene fork: static logo (no link to the portfolio page) --}}
             <div class="inline-block">
-                <img src="{{ $gallery->team->brand_logo_url }}" class="mx-auto max-h-16 md:max-h-24 dark:invert" alt="{{ $gallery->team->name }}" />
+                <img src="{{ $gallery->team->brand_logo_url }}" class="mx-auto h-16 w-auto md:h-24 dark:invert" alt="{{ $gallery->team->name }}" />{{-- Eugene fork: fixed height reserves the space (no jump when the logo loads) --}}
             </div>
 
             <x-ts-heading level="1" size="xl" class="mt-4">{{ $gallery->name }}</x-ts-heading>
@@ -412,7 +417,22 @@ new #[Layout('layouts.guest')] class extends Component
                             </div>
                         @endif
 
-                        @php($setInfo = $this->downloadSetInfo())
+                        {{-- Eugene fork: ZIP size --}}
+                        <div class="mb-6 flex flex-wrap items-center justify-center gap-2" data-download-sizes>
+                            <span class="mr-1 text-sm text-zinc-500 dark:text-white/60">{{ __('Size') }}:</span>
+                            <button type="button" wire:click="$set('downloadSize', null)"
+                                @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => ! $downloadSize, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $downloadSize])>
+                                {{ __('Original') }}
+                            </button>
+                            @foreach (\App\Services\PhotoSizedDownloadService::SIZES as $sizeKey => $sizePx)
+                                <button type="button" wire:key="download-size-pill-{{ $sizeKey }}" wire:click="$set('downloadSize', '{{ $sizeKey }}')"
+                                    @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => $downloadSize === $sizeKey, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $downloadSize !== $sizeKey])>
+                                    {{ \App\Services\PhotoSizedDownloadService::label($sizeKey) }}
+                                </button>
+                            @endforeach
+                        </div>
+
+                        @php($setInfo = $this->downloadInfo())
                         @if ($setInfo)
                             <livewire:gallery-download-panel
                                 :$gallery

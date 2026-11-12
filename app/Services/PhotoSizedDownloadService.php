@@ -46,7 +46,30 @@ class PhotoSizedDownloadService
     {
         abort_unless(isset(self::SIZES[$size]), 404);
 
+        $cached = $this->resizedPath($photo, $size, force: true);
+        abort_unless($cached !== null, 404);
+
+        $name = pathinfo($photo->downloadFileName(), PATHINFO_FILENAME).'-'.$size.'.jpg';
+
+        return response()->download($cached, $name, ['Content-Type' => 'image/jpeg']);
+    }
+
+    /**
+     * Local path of the resized copy (made and cached on first use). Null when the
+     * photo is not an image or is already no bigger than the size, unless $force.
+     */
+    public function resizedPath(Photo $photo, string $size, bool $force = false): ?string
+    {
+        if (! isset(self::SIZES[$size]) || ! $photo->isImage() || ! $photo->path) {
+            return null;
+        }
+
         $px = self::SIZES[$size];
+
+        if (! $force && ! isset(self::sizesFor($photo)[$size])) {
+            return null;
+        }
+
         $dir = storage_path('app/download-sizes');
 
         if (! is_dir($dir)) {
@@ -60,9 +83,7 @@ class PhotoSizedDownloadService
             $this->prune($dir);
         }
 
-        $name = pathinfo($photo->downloadFileName(), PATHINFO_FILENAME).'-'.$size.'.jpg';
-
-        return response()->download($cached, $name, ['Content-Type' => 'image/jpeg']);
+        return $cached;
     }
 
     protected function render(Photo $photo, int $px, string $cached): void
