@@ -41,6 +41,10 @@ Alpine.data('photoJustified', () => ({
     },
 
     ratio(tile) {
+        // Eugene fork: known ratio from the server = final layout before the image loads (no "breathing").
+        const known = Number(tile.dataset.ratio);
+        if (known > 0) return known;
+
         const media = tile.querySelector('img, video');
         if (media && media.tagName === 'IMG' && media.naturalWidth > 0 && media.naturalHeight > 0 && ! media.src.endsWith('app-logo-icon.png')) {
             return media.naturalWidth / media.naturalHeight;

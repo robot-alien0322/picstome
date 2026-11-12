@@ -62,6 +62,7 @@
     @endif
     data-photo-card
     data-photo-id="{{ $photo->id }}"
+    @if ($photo->width && $photo->height) data-ratio="{{ round($photo->width / $photo->height, 5) }}" @endif
     wire:key="{{ $htmlId ?? 'photo-'.$photo->id }}"
 >
     @if (! $isReady)

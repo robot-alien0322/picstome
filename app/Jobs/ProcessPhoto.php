@@ -345,6 +345,11 @@ class ProcessPhoto implements ShouldQueue
                 ->first();
         }
 
+        // Eugene fork: store display dimensions so justified galleries can lay out before images load.
+        if (! $version && ($dims = \App\Support\PhotoDimensions::fromFile($this->temporaryPhotoPath))) {
+            $this->photo->forceFill(['width' => $dims[0], 'height' => $dims[1]])->saveQuietly();
+        }
+
         if ($version) {
             $version->update($updateData);
         } else {
