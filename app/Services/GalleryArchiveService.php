@@ -185,6 +185,13 @@ class GalleryArchiveService
 
         // Thumbnails count towards storage usage but are not part of the ZIP.
         if ($photo->isImage()) {
+            // Eugene fork: the thumbnail size is only needed for RAW photos or when size is
+            // missing. Skipping it otherwise avoids two S3 calls per photo on every re-render,
+            // which made uploads into large galleries crawl (result is identical).
+            if (! $photo->raw_path && $photo->size) {
+                return (int) $photo->size;
+            }
+
             $thumbnailBytes = $this->thumbnailBytes($photo);
 
             if ($photo->raw_path) {
