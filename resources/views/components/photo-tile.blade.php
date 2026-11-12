@@ -104,6 +104,9 @@
                         loading="{{ $index < 8 ? 'eager' : 'lazy' }}"
                         @if ($index === 0) fetchpriority="high" @endif
                         decoding="async"
+                        {{-- Eugene fork: reserve the real shape before the image loads so the masonry
+                             columns don't jump as photos arrive (overrides the 3:4 placeholder). --}}
+                        @if ($photo->width && $photo->height) style="aspect-ratio: {{ $photo->width }} / {{ $photo->height }}" @endif
                     />
                 @else
                     <div class="aspect-[3/4] w-full animate-pulse bg-zinc-300 dark:bg-white/10"></div>
