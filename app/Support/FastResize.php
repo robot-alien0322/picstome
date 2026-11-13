@@ -7,28 +7,29 @@ use Spatie\Image\Enums\Fit;
 use Spatie\Image\Image;
 
 /**
- * Eugene fork: fast "fit inside a square box" resize. Big JPEGs are decoded straight at a
- * reduced scale (libjpeg DCT scaling via the jpeg:size hint) instead of decoding all
- * 33 MP first, which is several times faster for web/download sizes.
+ * Eugene fork: "fit inside a square box" resize for web/download sizes.
+ * Big JPEGs are decoded at a reduced scale (libjpeg DCT scaling via the jpeg:size hint), but
+ * never below 2x the target box, then downsized with Lanczos and a light unsharp mask.
+ * (Decoding straight at box size + a triangle filter was faster but visibly soft.)
  */
 class FastResize
 {
     public static function toFile(string $source, string $dest, int $box, string $format, int $quality = 90): void
     {
-        // Measured on 33 MP JPEGs: the scaled decode wins up to ~2048 px; above that GD is as fast.
-        if (! class_exists(Imagick::class) || $box > 2048) {
+        if (! class_exists(Imagick::class)) {
             Image::load($source)->fit(Fit::Max, $box, $box)->quality($quality)->save($dest);
 
             return;
         }
 
         $im = new Imagick;
-        $im->setOption('jpeg:size', $box.'x'.$box);
+        $im->setOption('jpeg:size', (2 * $box).'x'.(2 * $box));
         $im->readImage($source);
         self::autoOrient($im);
 
         if (max($im->getImageWidth(), $im->getImageHeight()) > $box) {
-            $im->resizeImage($box, $box, Imagick::FILTER_TRIANGLE, 1, true);
+            $im->resizeImage($box, $box, Imagick::FILTER_LANCZOS, 1, true);
+            $im->unsharpMaskImage(0, 0.6, 0.5, 0.02);
         }
 
         // Keep the colour profile, drop the rest of the metadata
