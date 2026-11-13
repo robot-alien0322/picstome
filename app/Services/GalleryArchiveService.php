@@ -158,7 +158,7 @@ class GalleryArchiveService
 
         return [
             'count' => (clone $query)->count(),
-            // Eugene fork: sized ZIP variants (all@low, set:15@medium...) scale the estimate by pixel count
+            // Eugene fork: sized ZIP variants (all@web, set:15@web) scale the estimate by pixel count
             'bytes' => $size
                 ? $this->estimatedSizedBytes((clone $query)->get(['id', 'path', 'raw_path', 'disk', 'size', 'stored_size', 'width', 'height']), $size)
                 : $this->estimatedSizeForPhotos((clone $query)->get(['id', 'path', 'raw_path', 'disk', 'size', 'stored_size'])),
@@ -1181,7 +1181,7 @@ class GalleryArchiveService
 
     /**
      * Eugene fork: variants are "all", "favorites" or "set:<id>", optionally with a
-     * download size suffix: "all@low", "set:15@medium" (sizes from PhotoSizedDownloadService).
+     * download size suffix: "all@web", "set:15@web" (sizes from PhotoSizedDownloadService).
      */
     public static function cleanVariant(?string $variant): string
     {

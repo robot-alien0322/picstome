@@ -10,14 +10,15 @@ use Spatie\Image\Image;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
- * Eugene fork: Zenfolio-style download sizes for single photos (long edge in px).
- * A resized copy is made on the first request and cached on local disk for a week.
+ * Eugene fork: one smaller download next to the original - "Web & Social", 2048 px on the long
+ * edge (Facebook's display size; Instagram downsizes it further). Pre-rendered after upload.
+ * (Was High 3264 / Medium 2560 / Low 1280 until 2026-11-13: too many choices, 3x the work.)
  */
 class PhotoSizedDownloadService
 {
-    public const SIZES = ['high' => 3264, 'medium' => 2560, 'low' => 1280];
+    public const SIZES = ['web' => 2048];
 
-    private const LABELS = ['high' => 'High', 'medium' => 'Medium', 'low' => 'Low'];
+    private const LABELS = ['web' => 'Web & Social'];
 
     private const CACHE_DAYS = 7;
 

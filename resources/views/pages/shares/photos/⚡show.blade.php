@@ -934,7 +934,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             @endif
 
             @if ($showsDownload)
-                {{-- Eugene fork: Original + High/Medium/Low sizes (only sizes smaller than the photo) --}}
+                {{-- Eugene fork: Original + Web & Social 2048 px (only when smaller than the photo) --}}
                 @php($sizeOptions = \App\Services\PhotoSizedDownloadService::sizesFor($photo))
                 @if (($photo->path && $photo->raw_path) || $sizeOptions)
                     <x-dropdown position="top-end">
@@ -943,7 +943,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                         </x-slot:action>
 
                         <x-dropdown.items
-                            :text="$sizeOptions ? __('Original').(max((int) $photo->width, (int) $photo->height) ? ' ('.max((int) $photo->width, (int) $photo->height).' px)' : '') : __('Download JPG')"
+                            :text="$sizeOptions ? __('Original (full resolution)') : __('Download JPG')"
                             icon="cloud-arrow-down"
                             :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'jpg'])"
                         />

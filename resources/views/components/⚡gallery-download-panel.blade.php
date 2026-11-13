@@ -389,7 +389,7 @@ new class extends Component
                 <span class="mr-1 text-sm text-zinc-500 dark:text-white/60">{{ __('Size') }}:</span>
                 <button type="button" wire:click="$set('pickSize', null)"
                     @class(['rounded-full px-4 py-1.5 text-sm transition', 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' => ! $pickSize, 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-white/10 dark:text-white/80' => $pickSize])>
-                    {{ __('Original') }}
+                    {{ __('Original (full resolution)') }}
                 </button>
                 @foreach (\App\Services\PhotoSizedDownloadService::SIZES as $sizeKey => $sizePx)
                     <button type="button" wire:key="dl-size-{{ $sizeKey }}" wire:click="$set('pickSize', '{{ $sizeKey }}')"
