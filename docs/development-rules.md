@@ -39,7 +39,7 @@ decides when it reaches `main`. Report the state of the work and wait.
   adding new logic.
 - New behavior has tests, including a regression test for the bug/feature.
 - `vendor/bin/pint --dirty` passes.
-- `composer test` passes (runs the full Pest suite in parallel).
+- `composer test` passes (full Pest suite, capped at 2 parallel workers).
 - `npm run build` passes when frontend assets changed.
 - Migrations have a working `down()` and have been tested with fresh + rollback.
 - External services and storage are faked in tests. Never rely on a real S3
@@ -50,6 +50,27 @@ decides when it reaches `main`. Report the state of the work and wait.
   data migration, concurrency, rollback or operational requirements.
 
 ## Migrations
+
+### Always verify against MySQL, never only SQLite
+
+CI and the test suite run on SQLite (`phpunit.xml` uses `:memory:`). SQLite
+accepts DDL that MySQL rejects, so a migration can pass every check and still
+fail on deploy. This actually happened: `#341` created `index(['disk','path'])`
+on `varchar(2048)` columns, passed CI, and failed on the server with
+`1071 Specified key was too long; max key length is 3072 bytes`.
+
+- Any migration with a driver branch (`$driver === 'mysql'`) **must** be run
+  against a real MySQL/MariaDB before merging. `migrate --pretend` and the Pest
+  suite only exercise the SQLite branch and prove nothing about MySQL.
+- InnoDB's index limit is 3072 bytes. In `utf8mb4` that is 768 characters, so
+  `string(2048)` (8192 bytes) always needs a prefix index:
+  `rawIndex("`path`(191)")`.
+- **Composite indexes need a prefix on every long column**, not just the first.
+- SQLite has no prefix syntax: `rawIndex('`path`(191)')` throws
+  `no such function: path`. The two drivers genuinely need different DDL.
+- Validate by running `up()` **and** `down()` against real column types, then
+  check `SHOW INDEX` reports `sub_part = 191` and `EXPLAIN` reports
+  `type: ref` instead of a full scan.
 
 - Prefer one consolidated migration per feature before merge.
 - All schema changes must be additive unless there is a reviewed data plan.
@@ -72,13 +93,33 @@ legacy migrations that are not fully reversible.
 
 ## Testing
 
-- Run the full suite with `composer test` (Pest in parallel). While iterating,
+- Run the full suite with `composer test` (Pest in parallel, 2 workers so the
+  run fits in this machine's memory). While iterating,
   use `./vendor/bin/pest --compact --filter=testName`.
 - Feature tests cover the happy path, permissions and failure cases.
-- UI changes require a browser test where practical.
+- UI changes require a browser test where practical. Browser tests are tagged
+  `->group('browser')` so `composer test:feature` can skip them while iterating
+  and `composer test:browser` runs them before the PR.
 - Queue jobs must be tested with a fake/sync queue.
 - Storage/URL tests must call `Storage::fake()` for the relevant disk.
 - Tests must not depend on production bucket names, credentials or cache state.
+
+### When to run the browser tests
+
+The browser suite (Pest + Playwright, `--testsuite=Components`) is slow: each
+test boots a real page in headless Chromium, so it takes minutes and it is the
+main reason local iteration feels sluggish.
+
+- **While developing**, run only what you changed: `--filter=testName` on a
+  feature test, or the specific `.test.php` file. Do not run the browser suite
+  on every save.
+- **Before opening a pull request**, run it once:
+  `composer test:browser` (or `composer test` for
+  everything). That is the moment the browser tests earn their cost.
+- If a browser test fails only under a full run and passes alone, re-run it
+  alone first: `Target page, context or browser has been closed` and geometry
+  timeouts are environment flakiness (RAM / parallel workers), not a
+  regression. Say so in the PR instead of chasing it.
 
 ### Testing payments locally
 

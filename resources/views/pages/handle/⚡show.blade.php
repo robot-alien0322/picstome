@@ -2,23 +2,39 @@
 
 use App\Models\Team;
 use App\Services\FakePaymentService;
+use App\Services\PaymentPlanLimitService;
 use Facades\App\Services\StripeConnectService;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\View\View;
 use Livewire\Attributes\Layout;
 use Livewire\Component;
+use TallStackUi\Traits\Interactions;
 
 new
 #[Layout('layouts.guest')]
 class extends Component
 {
+    use Interactions;
+
     public Team $team;
 
-    public ?Collection $galleries;
+    /**
+     * Whether the portfolio button is shown. A boolean instead of the
+     * galleries collection: the page only needs to know if any public
+     * gallery exists, and loading every photo of every gallery to answer
+     * that cost tens of megabytes on a large portfolio.
+     */
+    public bool $hasPublicGalleries = false;
 
     public $amount;
 
     public $description;
+
+    /**
+     * The photographer used up the monthly payment quota. The public profile
+     * hides the pay button instead of letting the client start a checkout
+     * that cannot be completed.
+     */
+    public bool $paymentsAvailable = true;
 
     public function mount(string $handle)
     {
@@ -26,7 +42,8 @@ class extends Component
 
         abort_if(! $this->team, 404);
 
-        $this->galleries = $this->team->galleries()->public()->with('photos')->get();
+        $this->hasPublicGalleries = $this->team->galleries()->public()->exists();
+        $this->paymentsAvailable = app(PaymentPlanLimitService::class)->canReceive($this->team);
     }
 
     public function rendering(View $view): void
@@ -36,6 +53,14 @@ class extends Component
 
     public function checkout()
     {
+        if (! $this->paymentsAvailable) {
+            $this->toast()
+                ->error(__('Payments are not available at the moment. Please contact us.'))
+                ->send();
+
+            return;
+        }
+
         $this->validate([
             'amount' => 'required|integer|min:1',
             'description' => 'required|string|max:255',
@@ -99,7 +124,7 @@ class extends Component
                     {!! $team->bio !!}
                 </div>
             @endif
-            @if($team->galleries()->public()->exists() && !$team->portfolio_public_disabled)
+            @if($this->hasPublicGalleries && !$team->portfolio_public_disabled)
                 <div class="flex justify-center">
                     <x-ts-button
                         variant="primary"
@@ -139,7 +164,7 @@ class extends Component
         @endsubscribed
     </div>
 
-    @if($team->hasCompletedOnboarding() && $team->show_pay_button)
+    @if($team->hasCompletedOnboarding() && $team->show_pay_button && $paymentsAvailable)
         <x-ts-modal
             name="generate-payment-link"
             x-init="if (new URL(window.location.href).searchParams.get('pay') === '1') { $nextTick(() => $tsui.open.modal('generate-payment-link')) }"

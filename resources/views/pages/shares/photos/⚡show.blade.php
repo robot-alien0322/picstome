@@ -35,11 +35,27 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
 
     public ?float $pendingPinY = null;
 
+    /**
+     * Playhead position captured when the comment composer opens on a video,
+     * stored with the comment as `time_seconds`.
+     */
+    public ?float $pendingTimeSeconds = null;
+
+    /**
+     * Second the player starts at when a deep link points at a timestamped
+     * comment. Wins over the remembered playback position.
+     */
+    public ?float $seekToSeconds = null;
+
     public function mount()
     {
         abort_unless($this->gallery->is_shared, 404);
 
         abort_unless($this->photo->gallery_id === $this->gallery->id, 404);
+
+        // Archived photos are invisible to clients, so their shared link must
+        // not resolve either.
+        abort_if($this->photo->isArchived(), 404);
 
         if ($this->navigateFavorites) {
             $this->next = $this->photo->nextFavorite();
@@ -51,6 +67,36 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             $this->next = $this->photo->next();
             $this->previous = $this->photo->previous();
         }
+
+        $this->focusRequestedComment();
+    }
+
+    /**
+     * Deep link from the comment notification: open the comment list, highlight
+     * the matching comment and, for a timestamped comment, start the video at
+     * that exact second.
+     */
+    protected function focusRequestedComment(): void
+    {
+        $commentId = (int) request()->query('comment');
+
+        if (! $commentId) {
+            return;
+        }
+
+        $comment = $this->photo->comments()->whereKey($commentId)->first();
+
+        if (! $comment) {
+            return;
+        }
+
+        $this->dispatch('focus-comment', id: $comment->id);
+
+        if ($comment->hasTimestamp()) {
+            $this->seekToSeconds = (float) $comment->time_seconds;
+        }
+
+        $this->openModal('add-comment');
     }
 
     public function favorite()
@@ -106,6 +152,24 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         $this->pendingPinY = null;
     }
 
+    /**
+     * Anchor the comment being written to the current playhead. Capture is
+     * video-only: image comments use `addAnnotation` instead.
+     */
+    public function setPendingTime(float $seconds): void
+    {
+        abort_unless($this->photo->isVideo(), 404);
+
+        abort_unless($this->photo->gallery->are_comments_enabled, 403);
+
+        $this->pendingTimeSeconds = round(max(0, $seconds), 2);
+    }
+
+    public function cancelPendingTime(): void
+    {
+        $this->pendingTimeSeconds = null;
+    }
+
     public function addComment()
     {
         abort_unless($this->photo->gallery->are_comments_enabled, 403);
@@ -117,13 +181,15 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         abort_if(Auth::check() && ! $this->canManageComments, 403);
 
         $hasPin = $this->pendingPinX !== null && $this->pendingPinY !== null && $this->photo->isImage();
+        $hasTimestamp = $this->pendingTimeSeconds !== null && $this->photo->isVideo();
 
         $comment = $this->photo->comments()->create([
             'user_id' => Auth::id() ?: null,
             'comment' => $this->commentText,
             'x' => $hasPin ? $this->pendingPinX : null,
             'y' => $hasPin ? $this->pendingPinY : null,
-            'annotated_version_number' => $hasPin ? $this->photo->currentVersionNumber() : null,
+            'time_seconds' => $hasTimestamp ? $this->pendingTimeSeconds : null,
+            'annotated_version_number' => $hasPin || $hasTimestamp ? $this->photo->currentVersionNumber() : null,
         ]);
 
         if (Auth::guest()) {
@@ -140,6 +206,14 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
 
             $this->closeModal('add-comment');
         }
+
+        if ($hasTimestamp) {
+            $this->pendingTimeSeconds = null;
+
+            $this->closeModal('add-comment');
+        }
+
+        $this->broadcastVideoMarkers();
     }
 
     public ?int $pendingCommentId = null;
@@ -160,6 +234,8 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         abort_unless($this->canManageComments, 403);
 
         $comment->delete();
+
+        $this->broadcastVideoMarkers();
     }
 
     /**
@@ -180,6 +256,47 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
     public function comments()
     {
         return $this->photo->comments()->latest()->with('user')->get();
+    }
+
+    /**
+     * The player draws markers from its initial render only; this pushes the
+     * new list after a comment is written or deleted.
+     */
+    protected function broadcastVideoMarkers(): void
+    {
+        if (! $this->photo->isVideo()) {
+            return;
+        }
+
+        unset($this->comments, $this->videoMarkers);
+
+        $this->dispatch(
+            'video-markers-updated',
+            photoId: $this->photo->id,
+            markers: $this->videoMarkers,
+        );
+    }
+
+    /**
+     * Markers for the video rail, keyed by comment. Pushed on
+     * `video-markers-updated` after a comment write because Alpine does not
+     * re-evaluate `x-data` on a Livewire morph.
+     *
+     * @return list<array{id: int, time: float, label: string, aria: string}>
+     */
+    #[Computed]
+    public function videoMarkers(): array
+    {
+        return $this->comments
+            ->filter(fn (PhotoComment $comment) => $comment->hasTimestamp())
+            ->map(fn (PhotoComment $comment) => [
+                'id' => $comment->id,
+                'time' => (float) $comment->time_seconds,
+                'label' => $comment->timecode(),
+                'aria' => __('Jump to :time', ['time' => $comment->timecode()]),
+            ])
+            ->values()
+            ->all();
     }
 
     #[Computed]
@@ -265,7 +382,10 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         panStartTranslateX: 0,
         panStartTranslateY: 0,
         initPhotoViewer() {
-            if (this.photoUrl) {
+            // Only images are preloaded with `new Image()`: handing an mp4 to
+            // the image cache would waste a request, and the player already
+            // fetches the video it needs.
+            if (this.photoUrl && @js($photo->isImage())) {
                 const image = new Image()
                 image.src = this.photoUrl
             }
@@ -470,8 +590,10 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                     img.src = this.nextLargeThumbnailUrl
                 }
             }
-            // Preload full photo URL
-            if (this.photoUrl) {
+            // Preload the full photo URL. Videos are excluded on purpose: the
+            // player fetches its own bytes, and an mp4 in the image cache is a
+            // wasted request.
+            if (this.photoUrl && @js($photo->isImage())) {
                 const img = new Image()
                 img.src = this.photoUrl
             }
@@ -486,12 +608,21 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
         watermarkWidth: 0,
         watermarkHeight: 0,
         updateDimensions() {
-            const img = this.$refs.photoImg
+            const source = this.$refs.photoImg
+            // Videos replaced the <img> in the zoom layer, so the intrinsic
+            // size comes from `videoWidth`/`videoHeight`. Until metadata
+            // arrives both are 0 and the watermark simply waits.
+            const video = this.$el.querySelector('#photo video')
+            const img = source && source.naturalWidth > 0 ? source : video
             const container = img ? img.parentElement : null
             if (img && container) {
                 // Use naturalWidth/naturalHeight for aspect ratio
-                const naturalWidth = img.naturalWidth
-                const naturalHeight = img.naturalHeight
+                const naturalWidth = img.naturalWidth || img.videoWidth || 0
+                const naturalHeight = img.naturalHeight || img.videoHeight || 0
+
+                if (! naturalWidth || ! naturalHeight) {
+                    return
+                }
                 const containerWidth = container.offsetWidth
                 const containerHeight = container.offsetHeight
                 this.containerWidth = containerWidth
@@ -544,13 +675,15 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
     }"
     x-init="initPhotoViewer(); updateDimensions()"
     x-on:selection-limit-reached.window="$tsui.open.modal('selection-limit')"
-    x-on:modal-close.document="if ($event.detail.name === 'add-comment') $wire.cancelPendingPin()"
+    x-on:video-metadata.window="updateDimensions()"
+    x-on:modal-close.document="if ($event.detail.name === 'add-comment') { $wire.cancelPendingPin(); $wire.cancelPendingTime() }"
     @keyup.window.left="$refs.previous && Livewire.navigate($refs.previous.href)"
     @keyup.window.right="$refs.next && Livewire.navigate($refs.next.href)"
-    @if ($this->photo->gallery->is_share_selectable)
-        @keyup.window.f
-        ="$wire.favorite()"
-    @endif
+    {{-- Favourites only exist when the gallery is selectable. The guard lives
+         inside the expression on purpose: a Blade `@if` around the attribute
+         makes the component emit block markers inside the tag, which breaks
+         parsing of every attribute that follows. --}}
+    x-on:keyup.window.f="if (@js($this->photo->gallery->is_share_selectable)) $wire.favorite()"
     class="flex h-screen flex-col {{ config('fork.website_style') ? 'bg-white dark:bg-zinc-800' : '' }}" {{-- Eugene fork: website-style viewer --}}
     x-on:resize.window="updateDimensions()"
 >
@@ -621,47 +754,12 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                     />
                 @endif
             @elseif ($photo->isVideo())
-                <video
-                    x-data="{
-                        loaded: false,
-                        errored: false,
-                        key: 'video-pos-{{ $photo->id }}',
-                        savePosition(e) {
-                            if (!e.target.seeking && !e.target.paused) {
-                                localStorage.setItem(this.key, e.target.currentTime);
-                            }
-                        },
-                        restorePosition(e) {
-                            const saved = localStorage.getItem(this.key);
-                            if (saved && !isNaN(saved) && saved > 0 && saved < e.target.duration - 2) {
-                                e.target.currentTime = parseFloat(saved);
-                            }
-                        },
-                        clearPosition() {
-                            localStorage.removeItem(this.key);
-                        }
-                    }"
-                    x-init="
-                        $el.addEventListener('loadedmetadata', restorePosition)
-                        $el.addEventListener('timeupdate', savePosition)
-                        $el.addEventListener('ended', clearPosition)
-                    "
-                    class="mx-auto h-full w-full max-w-full bg-black/60 object-contain dark:bg-white/60"
-                    controls
-                    autoplay
-                    muted
-                    playsinline
-                    x-ref="photoImg"
-                    x-on:loadeddata="
-                        loaded = true
-                        updateDimensions()
-                        preloadAdjacentImages()
-                    "
-                    x-on:error="errored = true"
-                >
-                    <source src="{{ $photo->url }}" type="video/{{ pathinfo($photo->path, PATHINFO_EXTENSION) }}" />
-                    Your browser does not support the video tag.
-                </video>
+                <x-video-player
+                    :$photo
+                    :comments="$this->comments"
+                    :markers="$this->videoMarkers"
+                    :start-at="$this->seekToSeconds"
+                />
             @elseif ($photo->isPdf())
                 <div class="flex h-full w-full flex-col items-center justify-center gap-4 px-8 text-center">
                     <x-icon name="document-text" class="size-16 text-zinc-400 dark:text-white/50" />
@@ -729,163 +827,150 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                 @endif
             @endif
         </div>
-        <div
-            class="absolute top-0 bottom-0 left-0 z-30 flex items-center px-3 max-sm:top-auto max-sm:px-1 max-sm:py-1 {{ config('fork.website_style') ? '[@media(hover:none)]:hidden!' : '' }}" {{-- Eugene fork: swipe on touch, no arrows --}}
-            :class="zoom ? 'hidden' : 'flex'"
-        >
-            @if ($previous)
-                <x-ts-button
-                    href="{{ route('shares.photos.show', ['gallery' => $photo->gallery, 'photo' => $previous, 'navigateCommented' => $navigateCommented ? true : null, 'navigateFavorites' => $navigateFavorites ? true : null]) }}"
-                    wire:navigate.hover
-                    x-ref="previous"
-                    icon="chevron-left"
-                    size="sm"
-                    class="py-10 max-sm:py-0"
-                    square
-                />
-            @endif
-        </div>
-        <div
-            class="absolute top-0 right-0 bottom-0 z-30 flex items-center px-3 max-sm:top-auto max-sm:px-1 max-sm:py-1 {{ config('fork.website_style') ? '[@media(hover:none)]:hidden!' : '' }}" {{-- Eugene fork: swipe on touch, no arrows --}}
-            :class="zoom ? 'hidden' : 'flex'"
-        >
-            @if ($next)
-                <x-ts-button
-                    href="{{ route('shares.photos.show', ['gallery' => $photo->gallery, 'photo' => $next, 'navigateCommented' => $navigateCommented ? true : null, 'navigateFavorites' => $navigateFavorites ? true : null]) }}"
-                    wire:navigate.hover
-                    x-ref="next"
-                    icon="chevron-right"
-                    size="sm"
-                    class="py-10 max-sm:py-0"
-                    square
-                />
-            @endif
-        </div>
+        {{-- Keep only the back affordance floating at the top: every action
+             now lives in the bottom dock, so the photo is not boxed in. --}}
         <div
             class="absolute top-0 right-0 left-0 z-30 flex items-center justify-between gap-4 p-3 max-sm:p-1"
             :class="zoom ? 'hidden' : 'flex'"
         >
-            <div class="flex gap-3">
-                <x-ts-button
-                    :href="$this->galleryUrl"
-                    wire:navigate.hover
-                    icon="arrow-left"
-                    size="sm"
-                    icon:variant="micro"
-                    variant="secondary"
-                    data-photo-back
-                >
-                    {{ __('Back') }}
-                </x-ts-button>
-            </div>
-            <div
-                class="flex gap-3"
-                x-data="{ annotating: false }"
-                x-on:annotations-toggled.window="annotating = $event.detail.active"
+            <x-ts-button
+                :href="$this->galleryUrl"
+                icon="arrow-left"
+                icon:variant="micro"
+                size="sm"
+                variant="secondary"
+                data-photo-back
+                wire:navigate.hover
+                :tooltip="__('Back to gallery :name', ['name' => $photo->gallery->name])"
+                :aria-label="__('Back to gallery :name', ['name' => $photo->gallery->name])"
             >
-                @if ($photo->gallery->are_comments_enabled)
-                    <div class="contents" x-show="! annotating">
-                        <x-ts-modal-trigger name="add-comment">
-                            <x-ts-button icon="chat-bubble-left-ellipsis" size="sm" class="max-sm:hidden" variant="secondary">
-                                @if ($this->comments->isEmpty())
-                                    {{ __('Add comment') }}
-                                @else
-                                    {{ __('Comments (:count)', ['count' => $this->comments->count()]) }}
-                                @endif
-                            </x-ts-button>
+                {{ __('Back') }}
+            </x-ts-button>
 
-                            <x-ts-button
-                                icon="chat-bubble-left-ellipsis"
-                                size="sm"
-                                class="sm:hidden"
-                                variant="secondary"
-                                square
-                                :aria-label="__('Comments')"
-                                data-mobile-comments
-                            />
-                        </x-ts-modal-trigger>
-                    </div>
-
-                    <x-photo-annotate-button
-                        :can-annotate="$photo->isImage() && $photo->gallery->are_annotations_enabled"
-                    />
-                @endif
-
-                @if ($this->photo->gallery->is_share_downloadable)
-                    {{-- Eugene fork: Original + High/Medium/Low sizes (only sizes smaller than the photo) --}}
-                    @php($sizeOptions = \App\Services\PhotoSizedDownloadService::sizesFor($photo))
-                    @if (($photo->path && $photo->raw_path) || $sizeOptions)
-                        <x-dropdown position="bottom-end">
-                            <x-slot:action>
-                                <x-ts-button icon="cloud-arrow-down" size="sm" variant="primary" square x-on:click="show = ! show" />
-                            </x-slot:action>
-
-                            <x-dropdown.items
-                                :text="$sizeOptions ? __('Original').(max((int) $photo->width, (int) $photo->height) ? ' ('.max((int) $photo->width, (int) $photo->height).' px)' : '') : __('Download JPG')"
-                                icon="cloud-arrow-down"
-                                :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'jpg'])"
-                            />
-                            @foreach ($sizeOptions as $sizeKey => $sizePx)
-                                <x-dropdown.items
-                                    :text="\App\Services\PhotoSizedDownloadService::label($sizeKey)"
-                                    icon="cloud-arrow-down"
-                                    :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'size' => $sizeKey])"
-                                />
-                            @endforeach
-                            @if ($photo->path && $photo->raw_path)
-                                <x-dropdown.items
-                                    :text="__('Download Raw')"
-                                    icon="cloud-arrow-down"
-                                    :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'raw'])"
-                                />
-                            @endif
-                        </x-dropdown>
-                    @else
-                        <x-ts-button
-                            :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo])"
-                            icon="cloud-arrow-down"
-                            icon:variant="mini"
-                            size="sm"
-                            variant="primary"
-                            square
-                        />
-                    @endif
-                @endif
-
-                @if ($this->photo->gallery->is_share_selectable)
-                    <x-ts-button
-                        name="favorite"
-                        wire:click="favorite"
-                        variant="overlay"
-                        size="sm"
-                        square
-                        :aria-label="__('Favorite')"
-                    >
-                        @if ($photo->isFavorited())
-                            <x-icon name="heart" solid class="size-5 text-red-500" />
-                        @else
-                            <x-icon name="heart" class="size-5" />
-                        @endif
-                    </x-ts-button>
-                @endif
-            </div>
         </div>
 
-        <div
-            x-data="{ annotating: false }"
-            x-on:annotations-toggled.window="annotating = $event.detail.active"
-            x-show="! annotating && ! zoom"
+        {{-- Bottom dock: the same icon-only controls as the owner viewer,
+             minus everything the client is not allowed to do. --}}
+        <x-photo-dock
+            x-show="! zoom"
             style="display: none"
-            class="absolute right-3 bottom-3 z-10 flex items-center gap-2"
+            data-viewer-dock
         >
-            @if (config('picstome.file_versions_enabled') && $photo->gallery->is_share_versions_visible)
+            {{-- Navigation first: previous / next live in the dock now. --}}
+            @if ($previous)
+                <x-dock-button
+                    :href="route('shares.photos.show', ['gallery' => $photo->gallery, 'photo' => $previous, 'navigateCommented' => $navigateCommented ? true : null, 'navigateFavorites' => $navigateFavorites ? true : null])"
+                    icon="chevron-left"
+                    :label="__('Previous photo')"
+                    hint="←"
+                    x-ref="previous"
+                    wire:navigate.hover
+                />
+            @endif
+
+            @if ($next)
+                <x-dock-button
+                    :href="route('shares.photos.show', ['gallery' => $photo->gallery, 'photo' => $next, 'navigateCommented' => $navigateCommented ? true : null, 'navigateFavorites' => $navigateFavorites ? true : null])"
+                    icon="chevron-right"
+                    :label="__('Next photo')"
+                    hint="→"
+                    x-ref="next"
+                    wire:navigate.hover
+                />
+            @endif
+
+            <x-dock-divider />
+
+            @if ($this->photo->gallery->is_share_selectable)
+                <x-dock-button
+                    icon="heart"
+                    :label="__('Favorite')"
+                    hint="F"
+                    :tone="$photo->isFavorited() ? 'favorite' : 'default'"
+                    data-dock-favorite
+                    wire:click="favorite"
+                />
+            @endif
+
+            @if ($photo->gallery->are_comments_enabled)
+                <x-ts-modal-trigger name="add-comment">
+                    {{-- On a video the playhead is the anchor: pause and
+                         capture the current second before the composer opens.
+                         The listener is always bound (the player simply ignores
+                         it when absent) because a Blade conditional inside a
+                         component tag stops Blade from compiling the tag. --}}
+                    <x-dock-button
+                        icon="chat-bubble-left-ellipsis"
+                        :label="__('Comments (:count)', ['count' => $this->comments->count()])"
+                        :tone="$this->comments->isEmpty() ? 'default' : 'ink'"
+                        data-photo-comments
+                        x-on:click="$dispatch('video-capture-time')"
+                    />
+                </x-ts-modal-trigger>
+
+                <x-photo-annotate-button
+                    :can-annotate="$photo->isImage() && $photo->gallery->are_annotations_enabled"
+                    :has-annotations="$this->annotationsCount > 0"
+                />
+            @endif
+
+            @if ($photo->gallery->are_comments_enabled && $photo->gallery->are_annotations_enabled && $this->annotationsCount > 0)
+                <x-photo-annotations-toggle />
+            @endif
+
+            @php
+                $showsVersions = config('picstome.file_versions_enabled')
+                    && $photo->gallery->is_share_versions_visible;
+                $showsDownload = $this->photo->gallery->is_share_downloadable;
+            @endphp
+
+            @if ($showsVersions || $showsDownload)
+                <x-dock-divider />
+            @endif
+
+            @if ($showsVersions)
                 <livewire:photo-versions :photo="$photo" :manageable="false" />
             @endif
 
-            @if ($photo->gallery->are_comments_enabled && $this->annotationsCount > 0)
-                <x-photo-annotations-toggle />
+            @if ($showsDownload)
+                {{-- Eugene fork: Original + High/Medium/Low sizes (only sizes smaller than the photo) --}}
+                @php($sizeOptions = \App\Services\PhotoSizedDownloadService::sizesFor($photo))
+                @if (($photo->path && $photo->raw_path) || $sizeOptions)
+                    <x-dropdown position="top-end">
+                        <x-slot:action>
+                            <x-dock-button icon="cloud-arrow-down" :label="__('Download')" tone="accent" x-on:click="show = ! show" />
+                        </x-slot:action>
+
+                        <x-dropdown.items
+                            :text="$sizeOptions ? __('Original').(max((int) $photo->width, (int) $photo->height) ? ' ('.max((int) $photo->width, (int) $photo->height).' px)' : '') : __('Download JPG')"
+                            icon="cloud-arrow-down"
+                            :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'jpg'])"
+                        />
+                        @foreach ($sizeOptions as $sizeKey => $sizePx)
+                            <x-dropdown.items
+                                :text="\App\Services\PhotoSizedDownloadService::label($sizeKey)"
+                                icon="cloud-arrow-down"
+                                :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'size' => $sizeKey])"
+                            />
+                        @endforeach
+                        @if ($photo->path && $photo->raw_path)
+                            <x-dropdown.items
+                                :text="__('Download Raw')"
+                                icon="cloud-arrow-down"
+                                :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo, 'type' => 'raw'])"
+                            />
+                        @endif
+                    </x-dropdown>
+                @else
+                    <x-dock-button
+                        icon="cloud-arrow-down"
+                        :label="__('Download')"
+                        :href="route('shares.photos.download', ['gallery' => $photo->gallery, 'photo' => $photo])"
+                        tone="accent"
+                    />
+                @endif
             @endif
-        </div>
+        </x-photo-dock>
     </div>
     @if ($photo->gallery->are_comments_enabled)
         <x-ts-modal name="add-comment" class="w-full sm:max-w-lg">
@@ -918,6 +1003,23 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                 @endif
 
                 <form wire:submit="addComment" class="space-y-4 pt-2">
+                    @if ($photo->isVideo() && $pendingTimeSeconds !== null)
+                        <div class="flex items-center gap-2 rounded-lg bg-zinc-100 px-3 py-2 text-sm dark:bg-zinc-800">
+                            <x-icon name="clock" class="size-4 shrink-0 text-zinc-500" />
+                            <span>{{ __('Comment at :time', ['time' => \App\Models\PhotoComment::formatTimecode($pendingTimeSeconds)]) }}</span>
+                            <x-ts-spacer />
+                            <x-ts-button
+                                variant="subtle"
+                                size="xs"
+                                square
+                                icon="x-mark"
+                                wire:click="cancelPendingTime"
+                                :aria-label="__('Remove timestamp')"
+                                data-clear-comment-time
+                            />
+                        </div>
+                    @endif
+
                     <x-ts-textarea wire:model.defer="commentText" :label="__('Add a comment')" rows="3" />
 
                     <div class="flex">
@@ -927,6 +1029,14 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
                 </form>
             </div>
         </x-ts-modal>
+    @endif
+
+    @if ($photo->isVideo())
+        @script
+            <script>
+                @include('partials.video-player-script')
+            </script>
+        @endscript
     @endif
 
     @unlesssubscribed($photo->gallery->team)
@@ -945,5 +1055,3 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
     <x-selection-limit-modal :limit="$photo->gallery->share_selection_limit" />
 </div>
 
-@assets
-@endassets

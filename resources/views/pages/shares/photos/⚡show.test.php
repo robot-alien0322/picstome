@@ -19,6 +19,16 @@ beforeEach(function () {
     Storage::fake('s3');
 });
 
+test('shared viewer never exposes photographer rating controls', function () {
+    $gallery = Gallery::factory()->shared()->selectable()->create(['ulid' => '0123ABC']);
+    $photo = Photo::factory()->for($gallery)->rated(4)->favorited()->create();
+
+    Livewire::test('pages::shares.photos.show', ['gallery' => $gallery, 'photo' => $photo])
+        ->assertDontSeeHtml('data-photo-rating')
+        ->assertDontSeeHtml('data-rating-stars')
+        ->assertDontSeeHtml('data-photo-info');
+});
+
 test('photo can be viewed when the gallery is shared', function () {
     $gallery = Gallery::factory()->shared()->has(Photo::factory())->create(['ulid' => '0123ABC']);
 
@@ -66,7 +76,8 @@ test('favorite photo when gallery is selectable', function () {
     $component = Livewire::test('pages::shares.photos.show', ['gallery' => $gallery, 'photo' => $gallery->photos()->first()])
         ->call('favorite');
 
-    expect($gallery->photos()->first()->isFavorited())->toBeTrue();
+    expect($gallery->photos()->first()->isFavorited())->toBeTrue()
+        ->and($gallery->photos()->first()->rating)->toBe(5);
 });
 
 test('photo cannot be favorited when the gallery is not selectable', function () {
@@ -147,10 +158,13 @@ test('favorite photo via browser on watermarked gallery', function () {
 
     $page = visit("/shares/test123/photos/{$photo->id}");
 
-    $page->pressAndWaitFor('favorite', 0.1);
+    // The dock is icon-only: the F shortcut is the stable way in, and the
+    // button itself is reached through its data hook.
+    $page->script("window.dispatchEvent(new KeyboardEvent('keyup', { key: 'f', bubbles: true }))");
+    $page->wait(0.3);
 
     expect($photo->fresh()->isFavorited())->toBeTrue();
-});
+})->group('browser');
 
 test('comment is required when adding a comment to a shared photo', function () {
     $gallery = Gallery::factory()->shared()->has(Photo::factory())->create([
@@ -301,7 +315,9 @@ test('only the team owner can delete any comment', function () {
 });
 
 test('shared gallery can show and compare versions when enabled', function () {
-    $gallery = Gallery::factory()->shared()->create([
+    // Downloadable so both actions are on screen and their order can be
+    // asserted below.
+    $gallery = Gallery::factory()->shared()->downloadable()->create([
         'ulid' => '0123ABC',
         'is_share_versions_visible' => true,
     ]);
@@ -317,8 +333,19 @@ test('shared gallery can show and compare versions when enabled', function () {
 
     $response->assertStatus(200);
     $response->assertSee('Compare versions');
-    $response->assertSee('Versions');
+    // The dock is icon-only: the versions trigger is reached by its hook, and
+    // its label lives in the tooltip / accessible name.
+    $response->assertSee('data-photo-versions', false);
+    $response->assertSee('Versions (2)');
     $response->assertDontSee('Restore');
+
+    // Order: versions sit immediately left of download.
+    $html = $response->getContent();
+    $versionsPosition = strpos($html, 'data-photo-versions');
+    $downloadPosition = strpos($html, 'aria-label="Download"');
+    expect($downloadPosition)->toBeInt()
+        ->and($versionsPosition)->toBeInt()
+        ->and($versionsPosition)->toBeLessThan($downloadPosition);
 });
 
 test('shared gallery hides versions by default', function () {
@@ -474,7 +501,7 @@ test('annotation pins are positioned after the image loads', function () {
         ->toBeTrue();
 
     $page->assertNoJavaScriptErrors();
-});
+})->group('browser');
 
 test('the shared comment list flags annotations made on an older version', function () {
     $gallery = Gallery::factory()->shared()->create([
@@ -508,11 +535,34 @@ test('annotation mode can be toggled from the toolbar in the browser', function 
 
     $page = visit("/shares/annotate1/photos/{$photo->id}");
 
-    $page->assertSee('Annotate')
-        ->click('Annotate')
-        ->assertSee('Exit annotation mode')
-        ->assertSee('Click on the photo to mark a spot');
-});
+    // The dock is icon-only: labels live in the tooltip / accessible name,
+    // not in visible text.
+    expect($page->script(<<<'JS'
+        (() => {
+            const enter = document.querySelector('[data-annotate-button]')
+
+            return enter ? enter.getAttribute('aria-label') : null
+        })()
+    JS))->toBe('Annotate');
+
+    $page->click('[data-annotate-button]');
+    $page->wait(0.2);
+
+    $state = $page->script(<<<'JS'
+        (() => {
+            const exit = document.querySelector('[data-annotate-exit]')
+
+            return {
+                label: exit ? exit.getAttribute('aria-label') : null,
+                visible: exit ? getComputedStyle(exit).display !== 'none' : false,
+            }
+        })()
+    JS);
+
+    expect($state)->toBe(['label' => 'Exit annotation mode', 'visible' => true]);
+
+    $page->assertSee('Click on the photo to mark a spot');
+})->group('browser');
 
 test('a guest can create an annotation from the browser', function () {
     $gallery = Gallery::factory()->shared()->create([
@@ -536,10 +586,18 @@ test('a guest can create an annotation from the browser', function () {
     $page->wait(0.3);
 
     // The comments button hides and the toolbar stays clickable above the
-    // annotation capture layer.
+    // annotation capture layer. The dock is icon-only, so "Annotate" is an
+    // accessible name, not text.
+    expect($page->script(<<<'JS'
+        (() => {
+            const enter = document.querySelector('[data-annotate-button]')
+
+            return enter ? enter.getAttribute('aria-label') : null
+        })()
+    JS))->toBe('Annotate');
+
     $page->assertDontSee('Add comment')
-        ->click('Exit annotation mode')
-        ->assertSee('Annotate');
+        ->click('[data-annotate-exit]');
 
     $page->script("window.dispatchEvent(new CustomEvent('toggle-annotations'))");
     $page->wait(0.3);
@@ -584,41 +642,112 @@ test('a guest can create an annotation from the browser', function () {
         })()
     JS);
 
-    $clickToggle = function (string $label) use ($page): void {
-        $page->script(<<<JS
-            (() => {
-                const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '{$label}')
-                button?.click()
-            })()
-        JS);
+    // The dock is icon-only, so toggles are reached by their data hooks.
+    $clickToggle = function (string $selector) use ($page): void {
+        $page->script("document.querySelector('{$selector}')?.click()");
 
         $page->wait(0.2);
     };
 
     expect($pinIsVisible())->toBeTrue();
 
-    $clickToggle('Hide annotations');
+    // One button, two colours: pins visible = green ("Hide annotations"),
+    // pins hidden = sage ("Show annotations"). Same reading as the comments
+    // button, where a filled tone means there is something to look at.
+    expect($page->script(<<<'JS'
+        (() => {
+            const toggle = document.querySelector('[data-annotations-hide], [data-annotations-show]')
+
+            return toggle ? [
+                toggle.getAttribute('aria-label'),
+                getComputedStyle(toggle).backgroundColor,
+            ] : null
+        })()
+    JS))->toBe(['Hide annotations', 'rgb(49, 109, 97)']);
+
+    $clickToggle('[data-annotations-hide]');
     expect($pinIsVisible())->toBeFalse();
 
-    $clickToggle('Show annotations');
+    expect($page->script(<<<'JS'
+        (() => {
+            const toggle = document.querySelector('[data-annotations-hide], [data-annotations-show]')
+
+            return toggle ? [
+                toggle.getAttribute('aria-label'),
+                getComputedStyle(toggle).backgroundColor,
+            ] : null
+        })()
+    JS))->toBe(['Show annotations', 'rgb(198, 216, 175)']);
+
+    $clickToggle('[data-annotations-show]');
     expect($pinIsVisible())->toBeTrue();
 
-    $controlsAreVisible = fn (): bool => (bool) $page->script(<<<'JS'
+    // The pins toggle stays reachable. Whether the dock stays visible during
+    // annotation mode is covered by the dedicated toggle test above.
+    expect($page->script(<<<'JS'
         (() => {
-            const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Hide annotations')
+            const button = document.querySelector('[data-annotations-hide]')
 
             return button ? button.offsetParent !== null : false
         })()
+    JS))->toBeTrue();
+
+    // The choice survives a new render: the key the overlay reads is the same
+    // one the toggle writes, so the state restored on the next photo is the
+    // one the photographer last chose (here: visible again).
+    expect($page->script("localStorage.getItem('picstome-annotations-visible')"))
+        ->toBe('1');
+})->group('browser');
+
+test('the hidden annotations state is kept while moving between photos', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => 'annotate3',
+        'are_comments_enabled' => true,
+        'are_annotations_enabled' => true,
+    ]);
+    $first = Photo::factory()->for($gallery)->create();
+    $second = Photo::factory()->for($gallery)->create();
+
+    foreach ([$first, $second] as $photo) {
+        PhotoComment::factory()->for($photo)->create([
+            'x' => 40,
+            'y' => 45,
+            'annotated_version_number' => 1,
+        ]);
+    }
+
+    $page = visit("/shares/annotate3/photos/{$first->id}");
+
+    $pinIsVisible = fn (): bool => (bool) $page->script(<<<'JS'
+        (() => {
+            const pin = document.querySelector('#photo button[title="Photo annotation"]')
+
+            return pin ? pin.offsetParent !== null : false
+        })()
     JS);
 
-    $page->script("window.dispatchEvent(new CustomEvent('toggle-annotations'))");
-    $page->wait(0.2);
-    expect($controlsAreVisible())->toBeFalse();
+    expect($pinIsVisible())->toBeTrue();
 
-    $page->script("window.dispatchEvent(new CustomEvent('toggle-annotations'))");
+    $page->script("document.querySelector('[data-annotations-hide]')?.click()");
     $page->wait(0.2);
-    expect($controlsAreVisible())->toBeTrue();
-});
+    expect($pinIsVisible())->toBeFalse();
+
+    // Navigate to the next photo the same way the arrow keys do.
+    $page->script("Livewire.navigate(document.querySelector('[data-viewer-dock] a[aria-label=\"Next photo (→)\"]').href)");
+    $page->wait(0.8);
+
+    expect($page->script('window.location.pathname'))->toContain('/photos/'.$second->id)
+        ->and($page->script("localStorage.getItem('picstome-annotations-visible')"))->toBe('0');
+
+    expect($pinIsVisible())->toBeFalse();
+    expect($page->script(<<<'JS'
+        (() => {
+            const show = document.querySelector('[data-annotations-show]')
+
+            return show ? show.offsetParent !== null : false
+        })()
+    JS))->toBeTrue();
+})->group('browser');
 
 test('the annotations toggle appears only when the photo has annotations', function () {
     $gallery = Gallery::factory()->shared()->create([
@@ -699,7 +828,7 @@ test('a platform admin can comment and delete comments on a shared photo', funct
     expect($photo->comments()->find($guestComment->id))->toBeNull();
 });
 
-test('mobile comments button opens the comments modal', function () {
+test('the mobile dock opens the comments modal', function () {
     $gallery = Gallery::factory()->shared()->create([
         'are_comments_enabled' => true,
         'are_annotations_enabled' => true,
@@ -710,7 +839,10 @@ test('mobile comments button opens the comments modal', function () {
     $page = visit("/shares/{$gallery->ulid}/photos/{$photo->id}");
     $page->resize(375, 900);
     $page->wait(0.2);
-    $page->click('[data-mobile-comments]');
+
+    // There is no separate mobile toolbar any more: the dock carries every
+    // action on every width, so mobile reaches comments through it.
+    $page->click('[data-photo-comments]');
     $page->wait(0.3);
 
     expect($page->script("getComputedStyle(document.querySelector('#add-comment')).display"))
@@ -721,4 +853,175 @@ test('mobile comments button opens the comments modal', function () {
 
     expect($page->script('document.documentElement.scrollWidth <= document.documentElement.clientWidth'))
         ->toBeTrue();
+})->group('browser');
+
+test('a guest can comment at a second of a shared video', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => '0123ABC',
+        'are_comments_enabled' => true,
+    ]);
+    $photo = Photo::factory()->video()->for($gallery)->create(['version_count' => 1]);
+
+    Livewire::test('pages::shares.photos.show', ['gallery' => $gallery, 'photo' => $photo])
+        ->call('setPendingTime', 12.5)
+        ->assertSet('pendingTimeSeconds', 12.5)
+        ->set('commentText', 'The client wants this shot trimmed')
+        ->call('addComment')
+        ->assertHasNoErrors();
+
+    $comment = $photo->comments()->first();
+
+    expect($comment->time_seconds)->toBe(12.5)
+        ->and($comment->x)->toBeNull()
+        ->and($comment->user_id)->toBeNull()
+        ->and($comment->annotated_version_number)->toBe(1);
 });
+
+test('a guest cannot comment at a second when comments are disabled', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => '0123ABC',
+        'are_comments_enabled' => false,
+    ]);
+    $photo = Photo::factory()->video()->for($gallery)->create();
+
+    Livewire::test('pages::shares.photos.show', ['gallery' => $gallery, 'photo' => $photo])
+        ->call('setPendingTime', 5.0)
+        ->assertStatus(403);
+});
+
+test('a guest cannot capture a time on a photo that is not a video', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => '0123ABC',
+        'are_comments_enabled' => true,
+    ]);
+    $photo = Photo::factory()->for($gallery)->create();
+
+    Livewire::test('pages::shares.photos.show', ['gallery' => $gallery, 'photo' => $photo])
+        ->call('setPendingTime', 5.0)
+        ->assertStatus(404);
+});
+
+test('timestamped comment chips are clickable in the shared viewer', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => '0123ABC',
+        'are_comments_enabled' => true,
+    ]);
+    $photo = Photo::factory()->video()->for($gallery)->create();
+
+    PhotoComment::factory()->for($photo)->atTime(95.0)->create(['comment' => 'Hold on this frame']);
+
+    get('/shares/0123ABC/photos/'.$photo->id)
+        ->assertOk()
+        ->assertSee('data-comment-time="01:35"', false)
+        ->assertSee('Hold on this frame')
+        ->assertSee('data-video-player', false);
+});
+
+test('the timestamped comment deep link seeks the shared video', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => '0123ABC',
+        'are_comments_enabled' => true,
+    ]);
+    $photo = Photo::factory()->video()->for($gallery)->create();
+    $comment = PhotoComment::factory()->for($photo)->atTime(37.25)->create();
+
+    Livewire::withQueryParams(['comment' => $comment->id])
+        ->test('pages::shares.photos.show', ['gallery' => $gallery, 'photo' => $photo])
+        ->assertSet('seekToSeconds', 37.25)
+        ->assertDispatched('focus-comment', id: $comment->id);
+});
+
+/*
+ * Regression: a Blade directive (`@if`, `@unless`) inside an element tag makes
+ * the compiler emit `<!--[if BLOCK]-->` markers in the middle of the attribute
+ * list, which swallows every attribute after it. It silently broke the
+ * favourite shortcut and prevented Livewire components from compiling.
+ */
+test('no blade block markers are emitted inside the viewer tag', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => '0123ABC',
+        'are_comments_enabled' => true,
+    ]);
+    $video = Photo::factory()->video()->for($gallery)->create();
+    $image = Photo::factory()->for($gallery)->create();
+
+    foreach ([$video, $image] as $photo) {
+        $html = get("/shares/0123ABC/photos/{$photo->id}")->getContent();
+
+        preg_match_all('/<[^>]*<!--\[if BLOCK\]>/', $html, $matches);
+
+        expect($matches[0])->toBeEmpty("Block markers inside a tag on photo {$photo->id}");
+    }
+});
+
+test('clicking a timestamp chip seeks the player and closes the composer', function () {
+    $gallery = Gallery::factory()->shared()->create([
+        'ulid' => '0123ABC',
+        'are_comments_enabled' => true,
+    ]);
+    $photo = Photo::factory()->video()->for($gallery)->create();
+
+    PhotoComment::factory()->for($photo)->atTime(30.0)->create(['comment' => 'Trim from here']);
+
+    $page = visit("/shares/0123ABC/photos/{$photo->id}");
+    $page->wait(0.5);
+
+    // The stored file is not fetchable in the test environment, so the player
+    // is given a fake duration: seeking is then observable on `currentTime`
+    // instead of on a decoded frame.
+    $page->script(<<<'JS'
+        (() => {
+            const video = document.querySelector('[data-video-player] video')
+
+            Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+            video.dispatchEvent(new Event('loadedmetadata'))
+
+            return true
+        })()
+    JS);
+
+    $page->click('[data-photo-comments]');
+    $page->wait(0.3);
+    $page->click('[data-comment-time]');
+    $page->wait(0.3);
+
+    $state = $page->script(<<<'JS'
+        (() => {
+            const video = document.querySelector('[data-video-player] video')
+
+            return {
+                time: Math.round(video.currentTime),
+                modalHidden: getComputedStyle(document.querySelector('#add-comment')).display === 'none',
+            }
+        })()
+    JS);
+
+    expect($state['modalHidden'])->toBeTrue()
+        ->and($state['time'])->toBe(30);
+})->group('browser');
+
+test('the player resumes from the position remembered in this browser', function () {
+    $gallery = Gallery::factory()->shared()->create(['ulid' => '0123ABC']);
+    $photo = Photo::factory()->video()->for($gallery)->create();
+
+    $page = visit("/shares/0123ABC/photos/{$photo->id}");
+    $page->wait(0.5);
+
+    $script = <<<JS
+        (() => {
+            const video = document.querySelector('[data-video-player] video')
+
+            // Seed the remembered position the way a previous visit would, then
+            // replay the metadata event the player listens to.
+            window.localStorage.setItem('picstome-video-position:{$photo->id}', '45')
+            Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+            video.dispatchEvent(new Event('loadedmetadata'))
+
+            return { time: Math.round(video.currentTime) }
+        })()
+    JS;
+
+    $state = $page->script($script);
+
+    expect($state['time'])->toBe(45);
+})->group('browser');

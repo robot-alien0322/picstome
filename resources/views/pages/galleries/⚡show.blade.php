@@ -6,6 +6,8 @@ use App\Livewire\Forms\ShareGalleryForm;
 use App\Models\FtpAccount;
 use App\Models\Gallery;
 use App\Models\Photo;
+use App\Services\GalleryPhotoQuery;
+use App\Services\StorageUsageService;
 use App\Traits\InteractsWithTallStackModals;
 use App\Traits\RevealsGalleryPhoto;
 use App\Traits\SummarizesGalleryTabs;
@@ -13,8 +15,10 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\On;
+use Livewire\Attributes\Renderless;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
@@ -39,9 +43,19 @@ new class extends Component
 
     public bool $adjustingCover = false;
 
+    /**
+     * Kept for the shared `RevealsGalleryPhoto` trait, which still knows the
+     * legacy `favorited` tab. The owner wall normalises that tab to the
+     * favourites filter on All photos before revealing a photo.
+     */
     public int $favoritePhotoLimit = 60;
 
     public int $commentedPhotoLimit = 60;
+
+    public int $archivedPhotoLimit = 60;
+
+    /** Archived photo ids awaiting the "delete all" confirmation. */
+    public int $pendingArchivedCount = 0;
 
     public array $existingPhotoNames = [];
 
@@ -50,7 +64,27 @@ new class extends Component
     #[Url]
     public $activeTab = 'all';
 
+    /**
+     * Owner-grid filter state. Kept in the URL so a filtered, sorted wall can
+     * be bookmarked, survives the round trip to the viewer and is rebuilt
+     * identically by the viewer's next/previous navigation.
+     */
+    #[Url(as: 'rating')]
+    public ?int $ratingFilter = null;
+
+    #[Url(as: 'favorites')]
+    public bool $favoritesOnly = false;
+
+    #[Url(as: 'sort')]
+    public string $sortField = 'name';
+
+    #[Url(as: 'direction')]
+    public string $sortDirection = 'asc';
+
     public $photos = [];
+
+    /** Bytes the team can still store. Null means unlimited storage. */
+    public ?int $remainingStorageBytes = null;
 
     public string $favoriteFileNames = '';
 
@@ -60,8 +94,28 @@ new class extends Component
         $this->form->setGallery($gallery);
         $this->shareForm->setGallery($gallery);
         $this->gallery->loadMissing(['coverPhoto', 'team']);
+
+        $team = $this->gallery->team;
+        $this->remainingStorageBytes = $team->storage_limit === null
+            ? null
+            : max(0, $team->storage_limit - StorageUsageService::forTeam($team));
+
         $this->photoshoots = Auth::user()?->currentTeam?->photoshoots()->latest()->get();
         $this->keepOriginalSize = (bool) $this->gallery->keep_original_size;
+
+        // Old links and bookmarks used a dedicated Favorites tab. It is now a
+        // filter on All photos, so normalise the URL instead of rendering an
+        // empty panel that no longer exists.
+        if ($this->activeTab === 'favorited') {
+            $this->activeTab = 'all';
+            $this->favoritesOnly = true;
+        }
+
+        // The Archived tab only exists while something is archived. A stale
+        // link (`?activeTab=archived` after a restore, or browser back) would
+        // otherwise render an empty gallery, so fall back to All photos.
+        $this->fallBackFromEmptyArchivedTab();
+
         $this->revealRequestedPhoto();
 
         if (request()->boolean('live')) {
@@ -74,7 +128,13 @@ new class extends Component
      *
      * Large RAW/video uploads can exceed PHP's default max_execution_time
      * while the local temporary file is copied to S3.
+     *
+     * `#[Renderless]` is deliberate: the uploader only consumes the returned
+     * array (id, status, remaining bytes), and re-rendering the 60-tile wall
+     * after every single file was the most expensive part of a batch upload.
+     * The wall is refreshed once the batch finishes.
      */
+    #[Renderless]
     public function save($index, $action = 'version')
     {
         set_time_limit(300);
@@ -132,23 +192,42 @@ new class extends Component
         $uploadedPhoto = $this->photos[$index];
         $identityKey = Gallery::identityKey($uploadedPhoto->getClientOriginalName());
 
-        $photo = $this->gallery->withPhotoIdentityLock($identityKey, function () use ($uploadedPhoto, $action): Photo {
-            $existingPhoto = $this->findPhotoByName($uploadedPhoto->getClientOriginalName());
+        try {
+            $photo = $this->gallery->withPhotoIdentityLock($identityKey, function () use ($uploadedPhoto, $action): Photo {
+                $existingPhoto = $this->findPhotoByName($uploadedPhoto->getClientOriginalName());
 
-            if ($existingPhoto !== null && $action === 'replace') {
-                return $this->replaceCurrentPhotoInGallery($uploadedPhoto, $existingPhoto);
+                if ($existingPhoto !== null && $action === 'replace') {
+                    return $this->replaceCurrentPhotoInGallery($uploadedPhoto, $existingPhoto);
+                }
+
+                if ($existingPhoto !== null) {
+                    return $this->addVersionToGallery($uploadedPhoto, $existingPhoto);
+                }
+
+                return $this->addPhotoToGallery($uploadedPhoto);
+            });
+        } catch (\Exception $exception) {
+            // The first check runs before the temp file moves to S3, but a
+            // concurrent upload can fill the quota between the two checks.
+            // Surface it as a field error so the uploader can show it per file.
+            if ($exception->getMessage() === 'Not enough storage') {
+                throw ValidationException::withMessages([
+                    "photos.{$index}" => __('You do not have enough storage space to upload this photo.'),
+                ]);
             }
 
-            if ($existingPhoto !== null) {
-                return $this->addVersionToGallery($uploadedPhoto, $existingPhoto);
-            }
+            throw $exception;
+        }
 
-            return $this->addPhotoToGallery($uploadedPhoto);
-        });
+        $team = $this->gallery->team;
+        $this->remainingStorageBytes = $team->storage_limit === null
+            ? null
+            : max(0, $team->storage_limit - StorageUsageService::forTeamFresh($team));
 
         return [
             'photoId' => $photo->id,
             'status' => $photo->status,
+            'remainingStorageBytes' => $this->remainingStorageBytes,
         ];
     }
 
@@ -157,9 +236,14 @@ new class extends Component
      * processing and warming the uploaded photos. Returning only ids and
      * statuses keeps polling cheap and avoids hydrating models.
      *
+     * `#[Renderless]` matters as much as the slim payload: without it Livewire
+     * re-rendered the whole photo wall (60 tiles, ~810kB of HTML, hundreds of
+     * queries) every 2 seconds just to hand back a handful of statuses.
+     *
      * @param  array<int, int|string>  $photoIds
      * @return array<int, string>
      */
+    #[Renderless]
     public function uploadStatuses(array $photoIds): array
     {
         $ids = collect($photoIds)
@@ -263,13 +347,6 @@ new class extends Component
     {
         $this->shareForm->gallery->is_shared = true;
 
-        if (! $this->team->subscribed()) {
-            $this->shareForm->passwordProtected = false;
-            $this->shareForm->descriptionEnabled = false;
-            $this->shareForm->commentsEnabled = false;
-            $this->shareForm->annotationsEnabled = false;
-        }
-
         $this->shareForm->update();
 
         $this->closeModal('share');
@@ -325,6 +402,70 @@ new class extends Component
         $this->forgetPhotoCollections();
 
         $this->dispatch('photo-favorited');
+        $this->dispatch(
+            'favorite-toggled',
+            id: $photo->id,
+            favorited: $photo->isFavorited(),
+        );
+    }
+
+    /**
+     * Archive or restore one photo from the gallery grid.
+     *
+     * Archiving is reversible, so it needs no confirmation: the individual
+     * action is instant, exactly like favoriting. Only the destructive
+     * "delete all archived" goes through a modal.
+     */
+    public function toggleArchive(Photo $photo): void
+    {
+        abort_unless($photo->gallery_id === $this->gallery->id, 404);
+
+        $this->authorize('update', $this->gallery);
+
+        $photo->toggleArchive();
+
+        // A cover photo that is archived would leak back into the public page.
+        if ($photo->isArchived() && $this->gallery->coverPhoto?->is($photo)) {
+            $this->gallery->update(['cover_photo_id' => null]);
+            $this->gallery->unsetRelation('coverPhoto');
+        }
+
+        $this->forgetPhotoCollections();
+    }
+
+    /**
+     * Ask for confirmation before deleting every archived photo. The modal
+     * states that the action is NOT reversible, so it is never auto-run.
+     */
+    public function requestDeleteArchived(): void
+    {
+        $this->authorize('update', $this->gallery);
+
+        $this->pendingArchivedCount = $this->archivedIds->count();
+
+        if ($this->pendingArchivedCount === 0) {
+            return;
+        }
+
+        $this->openModal('delete-archived');
+    }
+
+    public function deleteArchived(): void
+    {
+        $this->authorize('update', $this->gallery);
+
+        $this->gallery->photos()->archived()->with('versions')->cursor()->each(
+            fn (Photo $photo) => $photo->deleteFromDisk()->delete()
+        );
+
+        $this->pendingArchivedCount = 0;
+        $this->activeTab = 'all';
+
+        $this->forgetPhotoCollections();
+
+        $this->closeModal('delete-archived');
+
+        $this->toast()->success(__('All archived photos were deleted.'))->send();
     }
 
     public function setAsCover(Photo $photo): void
@@ -403,18 +544,145 @@ new class extends Component
         $this->forgetPhotoCollections();
     }
 
+    /**
+     * Filtering and sorting always restarts paging: the old 60/120/180 windows
+     * belong to the previous list and would leak photos that no longer match.
+     */
+    public function updated(string $property): void
+    {
+        if (in_array($property, ['ratingFilter', 'favoritesOnly', 'sortField', 'sortDirection'], true)) {
+            $this->resetPhotoLimits();
+        }
+    }
+
+    /**
+     * Clicking a star filters the wall to exactly that rating; clicking the
+     * active star clears the filter.
+     */
+    public function filterByRating(int $rating): void
+    {
+        $this->ratingFilter = $this->ratingFilter === $rating ? null : max(1, min(5, $rating));
+
+        $this->resetPhotoLimits();
+    }
+
+    public function clearRatingFilter(): void
+    {
+        $this->ratingFilter = null;
+
+        $this->resetPhotoLimits();
+    }
+
+    /**
+     * The Favorites tab is a filter on All photos, not a separate panel. It
+     * keeps the same grid, sorting and rating filters, and the URL stays
+     * shareable as `?favorites=1`.
+     */
+    public function showFavorites(): void
+    {
+        $this->activeTab = 'all';
+        $this->favoritesOnly = true;
+
+        $this->resetPhotoLimits();
+    }
+
+    public function showAllPhotos(): void
+    {
+        $this->activeTab = 'all';
+        $this->favoritesOnly = false;
+        $this->ratingFilter = null;
+
+        $this->resetPhotoLimits();
+    }
+
+    /**
+     * Switch to a real tab. Any tab outside All photos drops the favourites
+     * filter, so the filter never leaks into Comments or Archived.
+     */
+    public function showTab(string $tab): void
+    {
+        if (! in_array($tab, ['all', 'commented', 'archived', 'sync', 'download'], true)) {
+            return;
+        }
+
+        $this->activeTab = $tab;
+        $this->favoritesOnly = false;
+
+        $this->resetPhotoLimits();
+    }
+
+    public function clearFilters(): void
+    {
+        $this->ratingFilter = null;
+        $this->favoritesOnly = false;
+
+        $this->resetPhotoLimits();
+    }
+
+    /**
+     * Picking a field opens it in its natural direction (newest/highest first,
+     * names A-Z). The arrow next to the dropdown flips it afterwards.
+     */
+    public function sortBy(string $field): void
+    {
+        if (! in_array($field, GalleryPhotoQuery::SORTS, true)) {
+            return;
+        }
+
+        $this->sortField = $field;
+        $this->sortDirection = GalleryPhotoQuery::defaultDirection($field);
+
+        $this->resetPhotoLimits();
+    }
+
+    public function toggleSortDirection(): void
+    {
+        $this->sortDirection = $this->sortDirection === 'asc' ? 'desc' : 'asc';
+
+        $this->resetPhotoLimits();
+    }
+
+    protected function resetPhotoLimits(): void
+    {
+        $this->allPhotoLimit = 60;
+        $this->favoritePhotoLimit = 60;
+        $this->commentedPhotoLimit = 60;
+        $this->archivedPhotoLimit = 60;
+
+        $this->forgetPhotoCollections();
+    }
+
     protected function forgetPhotoCollections(): void
     {
         unset(
             $this->photoIds,
+            $this->photoQuery,
+            $this->filteredPhotoIds,
+            $this->filteredPhotoCount,
             $this->allPhotos,
             $this->favoriteIds,
-            $this->favorites,
             $this->favoriteNames,
             $this->commentedIds,
             $this->commentedPhotos,
+            $this->archivedIds,
+            $this->archivedPhotos,
+            $this->totalArchived,
             $this->mediaCounts,
         );
+
+        $this->fallBackFromEmptyArchivedTab();
+    }
+
+    /**
+     * The Archived tab is rendered only while at least one photo is archived.
+     * Restoring the last one hides the panel it was showing, so the grid must
+     * switch to All photos instead of rendering an empty tab.
+     */
+    protected function fallBackFromEmptyArchivedTab(): void
+    {
+        if ($this->activeTab === 'archived' && $this->archivedIds->isEmpty()) {
+            $this->activeTab = 'all';
+        }
     }
 
     public function markFavorites()
@@ -440,9 +708,10 @@ new class extends Component
             ->where(function ($query) use ($baseNames) {
                 $baseNames->each(fn ($base) => $query->orWhere('name', 'LIKE', $base.'.%'));
             })
-            ->update(['favorited_at' => now()]);
+            ->update(['favorited_at' => now(), 'rating' => 5]);
 
         Cache::forget("gallery:{$this->gallery->id}:favorites:ids");
+        Photo::invalidateGalleryQueryCache((int) $this->gallery->id);
 
         $this->forgetPhotoCollections();
         $this->favoriteFileNames = '';
@@ -459,15 +728,88 @@ new class extends Component
     }
 
     #[Computed]
+    public function photoQuery(): GalleryPhotoQuery
+    {
+        return GalleryPhotoQuery::fromArray([
+            'rating' => $this->ratingFilter,
+            'favorites' => $this->favoritesOnly,
+            'sort' => $this->sortField,
+            'direction' => $this->sortDirection,
+        ]);
+    }
+
+    /**
+     * Stable key for the masonry wrapper. Changing the filter or sort must
+     * rebuild the wall (and its Alpine positioning), while rating or hearting
+     * a tile must not.
+     */
+    #[Computed]
+    public function queryKey(): string
+    {
+        return implode('-', [
+            $this->ratingFilter ?? 'any',
+            $this->favoritesOnly ? 'fav' : 'all',
+            $this->sortField,
+            $this->sortDirection,
+        ]);
+    }
+
+    /**
+     * Returning from the viewer must grow the filtered batch that is actually
+     * rendered, not the unfiltered gallery.
+     */
+    protected function revealIds(string $tab): \Illuminate\Support\Collection
+    {
+        return match ($tab) {
+            'commented' => $this->commentedIds,
+            'archived' => $this->archivedIds,
+            default => $this->filteredPhotoIds,
+        };
+    }
+
+    /**
+     * Ordered ids for the All photos tab, after the active rating/favourite
+     * filters and the chosen sort. Cached per gallery version, not per request.
+     *
+     * @return \Illuminate\Support\Collection<int, int>
+     */
+    #[Computed]
+    public function filteredPhotoIds(): \Illuminate\Support\Collection
+    {
+        return $this->photoQuery->idsFor($this->gallery, 'all');
+    }
+
+    #[Computed]
+    public function filteredPhotoCount(): int
+    {
+        return $this->filteredPhotoIds->count();
+    }
+
+    #[Computed]
     public function allPhotos()
     {
-        return $this->gallery->photosInOrder($this->photoIds->take($this->allPhotoLimit));
+        return $this->gallery->photosInOrder($this->filteredPhotoIds->take($this->allPhotoLimit));
     }
 
     #[Computed]
     public function totalPhotos(): int
     {
         return $this->photoIds->count();
+    }
+
+    /**
+     * Gallery-wide rated count for the header summary. Unfiltered on purpose:
+     * it answers "how much of this shoot did I already cull?".
+     *
+     * Cached like its neighbours (`photoIds`, `favoriteIds`, `mediaCounts`):
+     * this ran `count(*)` on every render, including each 2-second upload
+     * poll. `Photo::galleryCacheKeys()` drops the key on every photo write,
+     * so rating a photo is reflected immediately.
+     */
+    #[Computed]
+    public function totalRated(): int
+    {
+        return $this->gallery->ratedPhotoCount();
     }
 
     #[Computed]
@@ -480,12 +822,6 @@ new class extends Component
     public function favoriteIds(): \Illuminate\Support\Collection
     {
         return $this->gallery->favoritePhotoIds();
-    }
-
-    #[Computed]
-    public function favorites()
-    {
-        return $this->gallery->photosInOrder($this->favoriteIds->take($this->favoritePhotoLimit));
     }
 
     #[Computed]
@@ -525,11 +861,35 @@ new class extends Component
         return $this->gallery->mediaCounts();
     }
 
+    /**
+     * Archived photo ids, naturally sorted. Owner-only list: archived photos
+     * never reach the public gallery, the favorites or the client ZIP.
+     *
+     * @return \Illuminate\Support\Collection<int, int>
+     */
+    #[Computed]
+    public function archivedIds(): \Illuminate\Support\Collection
+    {
+        return $this->gallery->archivedPhotoIds();
+    }
+
+    #[Computed]
+    public function archivedPhotos()
+    {
+        return $this->gallery->photosInOrder($this->archivedIds->take($this->archivedPhotoLimit));
+    }
+
+    #[Computed]
+    public function totalArchived(): int
+    {
+        return $this->archivedIds->count();
+    }
+
     public function loadMore(string $tab = 'all'): void
     {
         match ($tab) {
-            'favorited' => $this->favoritePhotoLimit += 60,
             'commented' => $this->commentedPhotoLimit += 60,
+            'archived' => $this->archivedPhotoLimit += 60,
             default => $this->allPhotoLimit += 60,
         };
 
@@ -544,6 +904,23 @@ new class extends Component
     {
         $this->forgetPhotoCollections();
         $this->gallery->load(['coverPhoto', 'team']);
+    }
+
+    /**
+     * The live watcher detected that camera uploads were paused because the
+     * team ran out of storage. Refresh the storage figures and surface the
+     * banner so the photographer knows before the next shot.
+     */
+    #[On('ftp-quota-paused')]
+    public function handleQuotaPaused(): void
+    {
+        $team = $this->gallery->team;
+
+        $this->remainingStorageBytes = $team->storage_limit === null
+            ? null
+            : max(0, $team->storage_limit - StorageUsageService::forTeamFresh($team));
+
+        unset($this->ftpAccount);
     }
 
     #[Computed]
@@ -579,7 +956,13 @@ new class extends Component
     {
         $this->authorize('update', $this->gallery);
 
-        if (! $this->team->subscribed()) {
+        // Camera upload is available on every plan, but a team with no space
+        // left has nothing to route to: the ingestor would discard the shots.
+        if (! $this->gallery->team->hasStorageLeft()) {
+            $this->toast()
+                ->error(__('Camera uploads are paused: no storage left.'))
+                ->send();
+
             return;
         }
 
@@ -640,6 +1023,20 @@ new class extends Component
         </x-ts-button>
     </div>
 
+    @if ($this->remainingStorageBytes !== null && $this->remainingStorageBytes <= 0)
+        <x-ts-callout icon="bolt" variant="warning" class="mt-4">
+            <x-ts-callout-heading>{{ __('Camera uploads are paused: no storage left') }}</x-ts-callout-heading>
+            <x-ts-callout-text>
+                {{ __('Photos sent from the camera are discarded until you free up space or upgrade your plan.') }}
+            </x-ts-callout-text>
+            <x-slot name="actions">
+                <x-ts-button :href="route('subscribe')" variant="primary">
+                    {{ __('Upgrade') }}
+                </x-ts-button>
+            </x-slot>
+        </x-ts-callout>
+    @endif
+
     <div class="mt-4 flex flex-wrap items-end justify-between gap-4 lg:mt-8">
         <div class="max-sm:w-full min-w-0 sm:flex-1">
             <div class="flex flex-wrap items-center gap-4">
@@ -672,6 +1069,9 @@ new class extends Component
                 <div class="mt-2 text-sm text-zinc-500 dark:text-white/70">
                     {{ $this->totalPhotos }}
                     {{ $this->totalPhotos === 1 ? __('photo') : __('photos') }} •
+                    @if ($this->totalRated > 0)
+                        {{ $this->totalRated }} {{ __('rated') }} •
+                    @endif
                     {{ $gallery->getFormattedStorageSize() }} {{ __('total storage') }}
                 </div>
             @endif
@@ -691,7 +1091,7 @@ new class extends Component
                 <x-dropdown.items
                     :text="__('Download')"
                     icon="cloud-arrow-down"
-                    wire:click="$set('activeTab', 'download')"
+                    wire:click="showTab('download')"
                     x-on:click="show = false"
                 />
 
@@ -712,9 +1112,10 @@ new class extends Component
 
                 @if ($this->totalFavorites > 0)
                     <x-dropdown.items
-                        :text="__('Favorite list')"
-                        icon="heart"
+                        :text="__('Export favorites')"
+                        icon="arrow-path"
                         x-on:click="show = false; $tsui.open.modal('favorite-list')"
+                        data-export-favorites-menu
                     />
                 @endif
 
@@ -776,85 +1177,171 @@ new class extends Component
 
             {{-- Eugene fork: gallery sets --}}
             <x-ts-button variant="secondary" icon="squares-2x2" :href="route('galleries.sets', $gallery)">{{ __('Sets') }}</x-ts-button>
-
-            @if ($gallery->coverPhoto)
-                <x-ts-button variant="secondary" icon="viewfinder-circle" wire:click="$set('adjustingCover', true)">{{ __('Adjust cover') }}</x-ts-button>
-            @endif
         </div>
     </div>
 
-    @if ($this->totalPhotos > 0)
-        <div class="mt-8 max-sm:-mx-5">
-            <x-gallery-tabs
-                :favorites-count="$this->totalFavorites"
-                :selection-limit="$gallery->share_selection_limit"
-                :comments-count="$this->totalComments()"
-                :show-sync="$this->syncEnabled"
-                :show-download="true"
-                :active-tab="$activeTab"
-            >
-                {{-- Eugene fork: activity tab --}}
-                <x-slot name="extraTabs">
-                    <button
-                        type="button"
-                        @click="$wire.activeTab = 'activity'; $dispatch('gallery-tab-changed')"
-                        x-bind:data-current="$wire.activeTab === 'activity'"
-                        class="inline-flex items-center gap-2 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-zinc-500 cursor-pointer transition hover:text-zinc-800 data-[current=true]:border-brand-green data-[current=true]:text-brand-green dark:text-zinc-400 dark:hover:text-white dark:data-[current=true]:border-brand-sage dark:data-[current=true]:text-brand-sage"
-                        aria-label="{{ __('Activity') }}"
-                        title="{{ __('Activity') }}"
+    {{-- The tabs also render when everything is archived: the archived tab is
+         the only way back to those photos. --}}
+    @if ($this->totalPhotos > 0 || $this->totalArchived > 0)
+        {{-- Tabs and filter/sort controls share one sticky row, so the
+             controls stay reachable while culling a long wall. --}}
+        <div class="bg-brand-paper/95 dark:bg-brand-night/95 sticky top-0 z-20 -mx-6 mt-8 px-6 backdrop-blur-md lg:-mx-8 lg:px-8">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-800/10 pb-1 dark:border-white/20">
+                <div class="min-w-0 flex-1">
+                    <x-gallery-tabs
+                        :favorites-count="$this->totalFavorites"
+                        :selection-limit="$gallery->share_selection_limit"
+                        :comments-count="$this->totalComments()"
+                        :show-sync="$this->syncEnabled"
+                        :show-download="true"
+                        :show-export="$this->totalFavorites > 0"
+                        :archived-count="$this->totalArchived"
+                        :active-tab="$activeTab"
+                        :favorites-as-filter="true"
+                        :favorites-filter-active="$favoritesOnly"
+                        :bordered="false"
                     >
-                        <x-icon name="chart-bar" class="size-5" />
-                        <span class="max-sm:sr-only">{{ __('Activity') }}</span>
-                    </button>
-                </x-slot>
+                        {{-- Eugene fork: activity tab --}}
+                        <x-slot name="extraTabs">
+                            <button
+                                type="button"
+                                @click="$wire.activeTab = 'activity'; $dispatch('gallery-tab-changed')"
+                                x-bind:data-current="$wire.activeTab === 'activity'"
+                                class="inline-flex items-center gap-2 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-zinc-500 cursor-pointer transition hover:text-zinc-800 data-[current=true]:border-brand-green data-[current=true]:text-brand-green dark:text-zinc-400 dark:hover:text-white dark:data-[current=true]:border-brand-sage dark:data-[current=true]:text-brand-sage"
+                                aria-label="{{ __('Activity') }}"
+                                title="{{ __('Activity') }}"
+                            >
+                                <x-icon name="chart-bar" class="size-5" />
+                                <span class="max-sm:sr-only">{{ __('Activity') }}</span>
+                            </button>
+                        </x-slot>
+                    </x-gallery-tabs>
+                </div>
 
-                <x-slot name="afterFavorites">
-                    @if ($this->totalFavorites > 0)
-                        <x-ts-modal-trigger name="favorite-list">
-                            <x-ts-badge size="sm" as="button">{{ __('Export') }}</x-ts-badge>
-                        </x-ts-modal-trigger>
-                    @endif
-                </x-slot>
-            </x-gallery-tabs>
+                <div
+                    x-cloak
+                    x-show="$wire.activeTab === 'all'"
+                    x-transition.opacity.duration.150ms
+                    class="shrink-0"
+                >
+                    <x-gallery-filter-bar
+                        :rating="$ratingFilter"
+                        :sort-field="$sortField"
+                        :sort-direction="$sortDirection"
+                        :all-count="$this->filteredPhotoCount"
+                        :all-total="$favoritesOnly ? $this->totalFavorites : $this->totalPhotos"
+                    />
+                </div>
+            </div>
+        </div>
 
-            <div x-show="$wire.activeTab === 'all'" class="pt-1" data-gallery-panel>
-                    <x-photo-masonry :photos="$this->allPhotos" :$gallery context="owner" html-id-prefix="photo" />
+        <div x-show="$wire.activeTab === 'all'" class="pt-1" data-gallery-panel>
+            {{-- Export favorites belongs to the favourites view: the coral button
+                 only shows while the Favorites filter is active, so the Photos
+                 tab stays clean. The icon next to the Favorites tab is the
+                 always-available shortcut to the same modal. --}}
+            @if ($favoritesOnly && $this->totalFavorites > 0)
+                <div class="mb-3 flex justify-end">
+                    <x-ts-modal-trigger name="favorite-list">
+                        <x-ts-button
+                            size="sm"
+                            icon="arrow-path"
+                            variant="primary"
+                            class="btn-coral"
+                            :tooltip="__('Export favorites')"
+                            data-export-favorites-content
+                        >
+                            {{ __('Export favorites') }}
+                        </x-ts-button>
+                    </x-ts-modal-trigger>
+                </div>
+            @endif
+
+            @if ($this->filteredPhotoCount > 0)
+                <div wire:key="all-photos-{{ $this->queryKey }}">
+                    <x-photo-masonry :photos="$this->allPhotos" :$gallery context="owner" html-id-prefix="photo" :view-query="$this->photoQuery->toQuery()" />
 
                     <x-auto-load-more
                         method="loadMore"
                         :args="['all']"
-                        :has-more="$this->totalPhotos > $this->allPhotos->count()"
+                        :has-more="$this->filteredPhotoCount > $this->allPhotos->count()"
                     />
                 </div>
-            <div x-show="$wire.activeTab === 'commented'" class="pt-1" data-gallery-panel>
-                    <x-photo-masonry :photos="$this->commentedPhotos" :$gallery context="owner" html-id-prefix="commented" :as-commented="true" />
+            @elseif ($favoritesOnly)
+                <div class="flex flex-col items-center justify-center py-14" data-filter-empty>
+                    <span class="bg-brand-star/10 text-brand-star mb-4 grid size-14 place-items-center rounded-2xl">
+                        <x-icon name="heart" class="size-7" />
+                    </span>
+
+                    @if ($this->totalFavorites === 0)
+                        <x-ts-heading size="lg" level="3">{{ __('No favorites yet') }}</x-ts-heading>
+                        <x-ts-text class="mt-2 mb-6 max-w-72 text-center">
+                            {{ __('Click the heart on any photo, or add a list of filenames in bulk.') }}
+                        </x-ts-text>
+                        <x-ts-modal-trigger name="mark-favorites">
+                            <x-ts-button variant="primary" icon="heart">{{ __('Add bulk favorites') }}</x-ts-button>
+                        </x-ts-modal-trigger>
+                    @else
+                        <x-ts-heading size="lg" level="3">{{ __('No favorites match these filters') }}</x-ts-heading>
+                        <x-ts-text class="mt-2 mb-6 max-w-72 text-center">
+                            {{ __('Clear the filters to see every favorited photo.') }}
+                        </x-ts-text>
+                        <x-ts-button wire:click="clearFilters" variant="primary" icon="x-mark">
+                            {{ __('Clear filters') }}
+                        </x-ts-button>
+                    @endif
+                </div>
+            @else
+                <div class="flex flex-col items-center justify-center py-14" data-filter-empty>
+                    <span class="bg-brand-star/10 text-brand-star mb-4 grid size-14 place-items-center rounded-2xl">
+                        <x-icon name="funnel" class="size-7" />
+                    </span>
+                    <x-ts-heading size="lg" level="3">{{ __('No photos match these filters') }}</x-ts-heading>
+                    <x-ts-text class="mt-2 mb-6 max-w-72 text-center">
+                        {{ __('Try a different rating or clear the filters to see the whole gallery.') }}
+                    </x-ts-text>
+                    <x-ts-button wire:click="clearFilters" variant="primary" icon="x-mark">
+                        {{ __('Clear filters') }}
+                    </x-ts-button>
+                </div>
+            @endif
+        </div>
+        <div x-show="$wire.activeTab === 'commented'" class="pt-1" data-gallery-panel>
+                <x-photo-masonry :photos="$this->commentedPhotos" :$gallery context="owner" html-id-prefix="commented" :as-commented="true" />
+
+                <x-auto-load-more
+                    method="loadMore"
+                    :args="['commented']"
+                    :has-more="$this->commentedIds->count() > $this->commentedPhotos->count()"
+                />
+            </div>
+        @if ($this->totalArchived > 0)
+                <div x-show="$wire.activeTab === 'archived'" class="pt-1" data-gallery-panel>
+                    <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <x-ts-text class="text-sm">
+                            {{ __('Archived photos are hidden from clients and from the gallery download. You can restore them at any time.') }}
+                        </x-ts-text>
+
+                        <x-ts-button
+                            variant="danger"
+                            icon="trash"
+                            size="sm"
+                            wire:click="requestDeleteArchived"
+                            data-delete-archived
+                        >
+                            {{ __('Delete all archived photos') }}
+                        </x-ts-button>
+                    </div>
+
+                    <x-photo-masonry :photos="$this->archivedPhotos" :$gallery context="owner" html-id-prefix="archived" :as-archived="true" />
 
                     <x-auto-load-more
                         method="loadMore"
-                        :args="['commented']"
-                        :has-more="$this->commentedIds->count() > $this->commentedPhotos->count()"
+                        :args="['archived']"
+                        :has-more="$this->totalArchived > $this->archivedPhotos->count()"
                     />
                 </div>
-            <div x-show="$wire.activeTab === 'favorited'" class="pt-1" data-gallery-panel>
-                    @if ($this->totalFavorites > 0)
-                        <x-photo-masonry :photos="$this->favorites" :$gallery context="owner" html-id-prefix="favorite" :as-favorite="true" />
-
-                        <x-auto-load-more
-                            method="loadMore"
-                            :args="['favorited']"
-                            :has-more="$this->totalFavorites > $this->favorites->count()"
-                        />
-                    @else
-                        <div class="flex flex-col items-center justify-center py-14">
-                            <x-ts-text class="mb-4 max-w-72 text-center">
-                                {{ __('No favorites yet. Add them in bulk or click the heart on individual photos.') }}
-                            </x-ts-text>
-                            <x-ts-modal-trigger name="mark-favorites">
-                                <x-ts-button variant="primary" icon="star">{{ __('Add bulk favorites') }}</x-ts-button>
-                            </x-ts-modal-trigger>
-                        </div>
-                    @endif
-                </div>
+            @endif
             @if ($this->syncEnabled)
                 <div x-show="$wire.activeTab === 'sync'" class="pt-1">
                     <x-gallery-sync-panel :$gallery />
@@ -875,7 +1362,6 @@ new class extends Component
                         :key="'download-panel-'.$gallery->id"
                     />
                 </div>
-        </div>
     @else
         <div class="mt-14 flex flex-1 flex-col items-center justify-center pb-32">
             <x-icon name="photo" class="mb-6 size-12 text-zinc-500 dark:text-white/70" />
@@ -908,7 +1394,7 @@ new class extends Component
                 </x-ts-subheading>
             </div>
 
-            @if (auth()->user()?->currentTeam->storage_used_percent > 95)
+            @if (auth()->user()?->currentTeam?->storageUsedPercentage() >= config('picstome.storage_warning_percent', 95))
                 <x-ts-callout icon="bolt" variant="secondary">
                     <x-ts-callout-heading>{{ __('Low storage space') }}</x-ts-callout-heading>
                     <x-ts-callout-text>
@@ -946,6 +1432,7 @@ new class extends Component
                 <x-ts-input
                     @change="handleFileSelect($event)"
                     type="file"
+                    data-test="upload-files"
                     accept="{{ '.'.implode(',.', config('picstome.upload_extensions')) }}"
                     multiple
                 />
@@ -1153,26 +1640,11 @@ new class extends Component
                 <x-ts-input wire:model="shareForm.selectionLimit" :label="__('Limit photo selection')" type="number" />
             </div>
 
-            @if (! $this->team->subscribed())
-                <x-ts-callout icon="bolt" variant="secondary" class="mb-4">
-                    <x-ts-callout-heading>{{ __('Unlock more sharing features') }}</x-ts-callout-heading>
-                    <x-ts-callout-text>
-                        {{ __('Subscribe to enable password protection, gallery descriptions, photo comments and annotations for shared galleries.') }}
-                    </x-ts-callout-text>
-                    <x-slot name="actions">
-                        <x-ts-button :href="route('subscribe')" variant="primary">
-                            {{ __('Subscribe') }}
-                        </x-ts-button>
-                    </x-slot>
-                </x-ts-callout>
-            @endif
-
             <livewire:gallery-subtitle :$gallery :key="'subtitle-'.$gallery->id" /> {{-- Eugene fork --}}
 
             <x-ts-switch
                 wire:model="shareForm.passwordProtected"
                 :label="__('Protect with a password')"
-                :disabled="!$this->team->subscribed()"
             />
 
             <div x-show="$wire.shareForm.passwordProtected">
@@ -1180,20 +1652,17 @@ new class extends Component
                     wire:model="shareForm.password"
                     type="password"
                     :label="__('Password')"
-                    :disabled="!$this->team->subscribed()"
                 />
             </div>
 
             <x-ts-switch
                 wire:model="shareForm.descriptionEnabled"
                 :label="__('Add description')"
-                :disabled="!$this->team->subscribed()"
             />
 
             <x-ts-switch
                 wire:model="shareForm.commentsEnabled"
                 :label="__('Enable photo comments')"
-                :disabled="!$this->team->subscribed()"
                 data-test="share-comments-toggle"
                 x-on:change="if (! $event.target.checked) $wire.set('shareForm.annotationsEnabled', false)"
             />
@@ -1202,7 +1671,6 @@ new class extends Component
                 wire:model="shareForm.annotationsEnabled"
                 :label="__('Enable photo annotations')"
                 :description="__('Visitors can pin a comment to a spot on the photo. Enabling this also enables photo comments.')"
-                :disabled="!$this->team->subscribed()"
                 data-test="share-annotations-toggle"
                 x-on:change="if ($event.target.checked) $wire.set('shareForm.commentsEnabled', true)"
             />
@@ -1250,15 +1718,15 @@ new class extends Component
                 </x-ts-subheading>
             </div>
 
-            @if (! $this->team->subscribed())
-                <x-ts-callout icon="bolt" variant="secondary">
-                    <x-ts-callout-heading>{{ __('Unlock camera upload') }}</x-ts-callout-heading>
+            @if ($this->remainingStorageBytes !== null && $this->remainingStorageBytes <= 0)
+                <x-ts-callout icon="bolt" variant="warning">
+                    <x-ts-callout-heading>{{ __('Camera uploads are paused') }}</x-ts-callout-heading>
                     <x-ts-callout-text>
-                        {{ __('Subscribe to connect your camera: it uploads photos straight to this gallery over FTP/SFTP while you shoot.') }}
+                        {{ __('You have no storage left, so new shots cannot be imported. Free up space or upgrade your plan to keep shooting.') }}
                     </x-ts-callout-text>
                     <x-slot name="actions">
                         <x-ts-button :href="route('subscribe')" variant="primary">
-                            {{ __('Subscribe') }}
+                            {{ __('Upgrade') }}
                         </x-ts-button>
                     </x-slot>
                 </x-ts-callout>
@@ -1276,7 +1744,7 @@ new class extends Component
                 wire:click="toggleFtpUploads"
                 :checked="$this->ftpAccount?->routesTo($gallery)"
                 :label="__('Receive photos in this gallery')"
-                :disabled="!$this->team->subscribed()"
+                :disabled="$this->remainingStorageBytes !== null && $this->remainingStorageBytes <= 0"
             />
 
             <x-ts-switch
@@ -1399,11 +1867,19 @@ new class extends Component
             <x-ts-input
                 wire:model="form.expirationDate"
                 :label="__('Expiration date')"
-                :badge="$this->team?->subscribed() ? __('Optional') : null"
+                :badge="$this->team?->hasUnlimitedRetention() ? __('Optional') : null"
                 type="date"
-                clearable
+                :clearable="$this->team?->hasUnlimitedRetention()"
                 :disabled="$gallery->is_public"
             />
+
+            @unless ($this->team?->hasUnlimitedRetention())
+                <x-ts-callout variant="secondary" icon="information-circle">
+                    <x-ts-callout-text>
+                        {{ __('This gallery will be deleted on :date. Your plan keeps galleries for one year from creation; subscribe to remove the expiration date.', ['date' => $gallery->created_at->copy()->addYear()->isoFormat('LL')]) }}
+                    </x-ts-callout-text>
+                </x-ts-callout>
+            @endunless
 
 
 
@@ -1604,6 +2080,14 @@ new class extends Component
     />
 
     <x-confirm-modal
+        name="delete-archived"
+        :title="__('Delete all archived photos?')"
+        :message="__('This deletes every archived photo and its files. This action CANNOT be undone: the photos and their originals are gone for good.')"
+        :confirm-label="__('Delete all archived')"
+        method="deleteArchived"
+    />
+
+    <x-confirm-modal
         name="delete-gallery"
         :title="__('Delete gallery?')"
         :message="__('This action cannot be undone.')"
@@ -1681,6 +2165,43 @@ new class extends Component
                 'failed' => __('Failed'),
             ]),
 
+            remainingBytes: @js($this->remainingStorageBytes),
+
+            quotaMessage: @js(__('You do not have enough storage space to upload this photo.')),
+
+            uploadFailedMessage: @js(__('The file could not be uploaded. Please try again.')),
+
+            reservedBytes() {
+                return this.files
+                    .filter((fileObj) => ['checking', 'pending', 'queued', 'uploading', 'conflict'].includes(fileObj.status))
+                    .reduce((total, fileObj) => total + (fileObj.file?.size ?? 0), 0);
+            },
+
+            errorMessage(errors) {
+                if (! errors) {
+                    return null;
+                }
+
+                if (typeof errors === 'string') {
+                    return errors;
+                }
+
+                if (Array.isArray(errors)) {
+                    return errors[0] ?? null;
+                }
+
+                return null;
+            },
+
+            failUpload(fileObj, message) {
+                fileObj.error = message;
+                fileObj.status = 'failed';
+                fileObj.progress = 0;
+                this.activeUploads = Math.max(0, this.activeUploads - 1);
+                this.processUploadQueue();
+                this.closeIfAllResolved();
+            },
+
             init() {
                 setInterval(() => {
                     const oneMinuteAgo = Date.now() - 60000;
@@ -1693,8 +2214,9 @@ new class extends Component
                 const selectedFiles = Array.from(event.target.files);
                 this.oversizedFiles = [];
                 this.unsupportedFiles = [];
-                this.processFiles(selectedFiles);
+                const added = this.processFiles(selectedFiles);
                 await this.markConflicts();
+                this.applyStoragePrecheck(added);
                 this.processUploadQueue();
             },
 
@@ -1704,8 +2226,9 @@ new class extends Component
                 this.unsupportedFiles = [];
                 const dt = event.dataTransfer;
                 if (dt && dt.files && dt.files.length > 0) {
-                    this.processFiles(Array.from(dt.files));
+                    const added = this.processFiles(Array.from(dt.files));
                     await this.markConflicts();
+                    this.applyStoragePrecheck(added);
                     this.processUploadQueue();
                 }
             },
@@ -1817,6 +2340,11 @@ new class extends Component
                 if (this.checkAllUploadsComplete()) {
                     this.stopStatusPolling();
                     $tsui.close.modal('add-photos');
+
+                    // Upload actions are `#[Renderless]` so the photo wall is
+                    // not re-rendered once per file. Refresh it a single time
+                    // once the whole batch has finished.
+                    $wire.$refresh();
                 }
             },
 
@@ -1979,19 +2507,27 @@ new class extends Component
                     uploadName,
                     fileObj.file,
                     () => {
-                        $wire.save(index, fileObj.conflictAction || 'version').then((result) => {
-                            if (result && result.errors && result.errors['photos.' + index]) {
-                                const error = result.errors['photos.' + index];
-                                fileObj.error = typeof error === 'string' ? error : null;
-                                fileObj.status = 'failed';
-                                this.activeUploads--;
-                                this.processUploadQueue();
-                            } else {
+                        $wire.save(index, fileObj.conflictAction || 'version')
+                            .then((result) => {
+                                const validationError = this.errorMessage(result?.errors?.['photos.' + index]);
+
+                                if (validationError) {
+                                    this.failUpload(fileObj, validationError);
+
+                                    return;
+                                }
+
                                 fileObj.status = 'completed';
+                                fileObj.error = null;
                                 fileObj.photoId = result?.photoId ?? null;
                                 fileObj.photoStatus = result?.status ?? 'pending';
                                 fileObj.progress = 100;
-                                this.activeUploads--;
+
+                                if (typeof result?.remainingStorageBytes !== 'undefined') {
+                                    this.remainingBytes = result.remainingStorageBytes;
+                                }
+
+                                this.activeUploads = Math.max(0, this.activeUploads - 1);
                                 this.processUploadQueue();
 
                                 if (fileObj.photoId && ! this.isPhotoStatusTerminal(fileObj.photoStatus)) {
@@ -1999,14 +2535,20 @@ new class extends Component
                                 }
 
                                 this.closeIfAllResolved();
-                            }
-                        });
+                            })
+                            .catch((error) => {
+                                // Livewire rejects the action promise with
+                                // {status: 422, errors: {...}} when the server
+                                // validation fails (for example, quota exceeded).
+                                const validationError = this.errorMessage(error?.errors?.['photos.' + index])
+                                    ?? this.errorMessage(error?.response?.errors?.['photos.' + index]);
+
+                                this.failUpload(fileObj, validationError ?? this.uploadFailedMessage);
+                            });
                     },
                     (error) => {
-                        fileObj.status = 'failed';
                         console.error('Upload failed:', error);
-                        this.activeUploads--;
-                        this.processUploadQueue();
+                        this.failUpload(fileObj, this.uploadFailedMessage);
                     },
                     (event) => {
                         fileObj.progress = Math.round((event.loaded / event.total) * 100);
@@ -2017,6 +2559,7 @@ new class extends Component
             processFiles(files) {
                 const allowedExtensions = {{ Js::from(config('picstome.upload_extensions')) }};
                 const maxSize = 5 * 1024 * 1024 * 1024;
+                const added = [];
 
                 files.forEach((file) => {
                     const name = file.name;
@@ -2035,16 +2578,62 @@ new class extends Component
                         return;
                     }
 
-                    this.files.push({
+                    const fileObj = {
                         file,
                         progress: 0,
                         status: 'checking',
-                    });
+                    };
+
+                    this.files.push(fileObj);
+                    added.push(file);
+                });
+
+                return added;
+            },
+
+            applyStoragePrecheck(newFiles) {
+                if (this.remainingBytes === null) {
+                    return;
+                }
+
+                const selected = this.files.filter((fileObj) => newFiles.includes(fileObj.file));
+
+                // Files that are already queued count against the remaining
+                // bytes. Conflicts are left to the server because replacing a
+                // photo only needs the difference, not the whole new file.
+                let reserved = this.files
+                    .filter((fileObj) => ! selected.includes(fileObj) && ['checking', 'pending', 'queued', 'uploading', 'conflict'].includes(fileObj.status))
+                    .reduce((total, fileObj) => total + (fileObj.file?.size ?? 0), 0);
+
+                selected.forEach((fileObj) => {
+                    if (! ['pending', 'queued'].includes(fileObj.status)) {
+                        return;
+                    }
+
+                    const available = Math.max(0, this.remainingBytes - reserved);
+
+                    if (fileObj.file.size > available) {
+                        fileObj.status = 'failed';
+                        fileObj.error = this.quotaMessage;
+                        fileObj.progress = 0;
+
+                        return;
+                    }
+
+                    reserved += fileObj.file.size;
                 });
             },
 
             retryUpload(index) {
                 const fileObj = this.files[index];
+
+                if (this.remainingBytes !== null && fileObj.conflictAction !== 'replace' && fileObj.file.size > Math.max(0, this.remainingBytes - this.reservedBytes())) {
+                    fileObj.status = 'failed';
+                    fileObj.error = this.quotaMessage;
+
+                    return;
+                }
+
                 fileObj.status = 'pending';
                 fileObj.progress = 0;
                 fileObj.error = null;

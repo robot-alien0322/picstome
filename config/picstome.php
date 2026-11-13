@@ -101,6 +101,13 @@ return [
     'personal_team_monthly_invoice_limit' => 1,
 
     /**
+     * Maximum number of payments a free team can receive per month.
+     * Only completed payments consume this limit, so an abandoned checkout
+     * does not use up the month.
+     */
+    'personal_team_monthly_payment_limit' => 1,
+
+    /**
      * Maximum allowed pixels for original size images (width * height).
      * This limit is set because wsrv.nl cannot process images larger than this.
      */
@@ -171,7 +178,15 @@ return [
      */
     'live_gallery_poll_seconds' => (int) env('PICSTOME_LIVE_GALLERY_POLL_SECONDS', 5),
 
-    'disk' => 's3',
+    /**
+     * Disk used for uploaded media and generated documents.
+     *
+     * Read from the environment so a local checkout or a test run is not
+     * forced onto the shared S3 bucket. It used to be hardcoded to `s3`,
+     * which made `Storage::fake()` impossible to honour and sent test
+     * artefacts (invoice PDFs) to the real bucket.
+     */
+    'disk' => env('PICSTOME_DISK', 's3'),
 
     // Number of days before expiration to send gallery reminder
     'gallery_expiration_reminder_days' => env('GALLERY_EXPIRATION_REMINDER_DAYS', 3),

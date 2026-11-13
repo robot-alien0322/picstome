@@ -10,6 +10,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Http\File;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Spatie\Image\Image;
@@ -27,6 +28,11 @@ class ProcessPhoto implements ShouldQueue
     use Queueable;
 
     public $timeout = 60 * 4; // 4 minutes
+
+    /** Retry transient S3/local-storage failures before marking the version failed. */
+    public $tries = 3;
+
+    public $backoff = [10, 60];
 
     public $temporaryPhotoPath;
 
@@ -87,6 +93,7 @@ class ProcessPhoto implements ShouldQueue
 
         if (! RawPhotoService::isRawFile($this->targetSourceName())) {
             $this->prepareTemporaryPhoto();
+            $this->assertTemporaryPhotoIsReadable();
         } elseif (! $this->processRawFile()) {
             $this->markSkipped();
 
@@ -277,12 +284,36 @@ class ProcessPhoto implements ShouldQueue
 
         $this->temporaryPhotoPath = Storage::disk('local')->path($tempFileRelativePath);
 
-        file_put_contents(
-            $this->temporaryPhotoPath,
-            Storage::disk('s3')->get($this->targetPath())
-        );
+        $contents = Storage::disk('s3')->get($this->targetPath());
+
+        if (! is_string($contents) || $contents === '') {
+            throw new \RuntimeException(
+                'Could not read the uploaded photo from S3.'
+            );
+        }
+
+        $written = file_put_contents($this->temporaryPhotoPath, $contents);
+
+        if ($written === false || $written !== strlen($contents)) {
+            @unlink($this->temporaryPhotoPath);
+
+            throw new \RuntimeException(
+                'Could not write the temporary photo to the local disk.'
+            );
+        }
 
         $this->temporaryPhotoRelativePath = $tempFileRelativePath;
+    }
+
+    protected function assertTemporaryPhotoIsReadable(): void
+    {
+        if (! is_file($this->temporaryPhotoPath) || filesize($this->temporaryPhotoPath) === 0) {
+            throw new \RuntimeException('The temporary photo is empty.');
+        }
+
+        if (@getimagesize($this->temporaryPhotoPath) === false) {
+            throw new \RuntimeException('The temporary photo is not a readable image.');
+        }
     }
 
     protected function resizePhoto(): void
@@ -345,20 +376,31 @@ class ProcessPhoto implements ShouldQueue
                 ->first();
         }
 
-        // Eugene fork: store display dimensions so justified galleries can lay out before images load.
-        if (! $version && ($dims = \App\Support\PhotoDimensions::fromFile($this->temporaryPhotoPath))) {
-            $this->photo->forceFill(['width' => $dims[0], 'height' => $dims[1]])->saveQuietly();
+        // Pixel dimensions of the file that is actually served. The floating
+        // info panel shows resolution and aspect ratio from the row, and the
+        // API upload path already writes these; local uploads used to leave
+        // them null, so the panel silently hid both rows.
+        //
+        // They live only on the photo (versions have no dimension columns) and
+        // only describe the current file, so only the current target gets them.
+        // Eugene fork: EXIF-aware, so rotated portraits report display width/height
+        // (justified galleries lay out from these before the images load).
+        $dimensions = \App\Support\PhotoDimensions::fromFile($this->temporaryPhotoPath) ?? [];
+
+        if (isset($dimensions[0], $dimensions[1])) {
+            $updateData['width'] = $dimensions[0];
+            $updateData['height'] = $dimensions[1];
         }
 
         if ($version) {
-            $version->update($updateData);
+            $version->update(Arr::except($updateData, ['width', 'height']));
         } else {
             $this->photo->update($updateData);
 
             if ($this->photo->current_version_id) {
                 $this->photo->versions()
                     ->whereKey($this->photo->current_version_id)
-                    ->update($updateData);
+                    ->update(Arr::except($updateData, ['width', 'height']));
             }
         }
 
@@ -461,7 +503,13 @@ class ProcessPhoto implements ShouldQueue
         }
 
         $maxPixels = config('picstome.max_photo_pixels');
-        [$width, $height] = getimagesize($this->temporaryPhotoPath);
+        $imageSize = @getimagesize($this->temporaryPhotoPath);
+
+        if (! is_array($imageSize)) {
+            throw new \RuntimeException('The temporary photo is not a readable image.');
+        }
+
+        [$width, $height] = $imageSize;
 
         if ($width * $height <= $maxPixels) {
             return false;

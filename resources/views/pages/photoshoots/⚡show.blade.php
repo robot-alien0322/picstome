@@ -1,6 +1,5 @@
 <?php
 
-use App\Traits\InteractsWithTallStackModals;
 use App\Livewire\Forms\ContractForm;
 use App\Livewire\Forms\GalleryForm;
 use App\Livewire\Forms\PaymentLinkForm;
@@ -10,6 +9,7 @@ use App\Models\ContractTemplate;
 use App\Models\Invoice;
 use App\Models\Photoshoot;
 use App\Services\InvoiceFromPaymentService;
+use App\Traits\InteractsWithTallStackModals;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
@@ -18,6 +18,7 @@ use Livewire\Component;
 new class extends Component
 {
     use InteractsWithTallStackModals;
+
     public PaymentLinkForm $paymentLinkForm;
 
     public Photoshoot $photoshoot;
@@ -57,6 +58,11 @@ new class extends Component
         $this->authorize('view', $photoshoot);
 
         $this->photoshoot = $photoshoot;
+
+        // The Galleries block renders a thumbnail per gallery; eager loading
+        // the photo and its gallery keeps PhotoUrlService from resolving both
+        // lazily (one pair of queries per card).
+        $this->photoshoot->loadMissing('galleries.firstImagePhoto.gallery');
 
         $this->form->setPhotoshoot($this->photoshoot);
 
@@ -416,16 +422,16 @@ new class extends Component
             <x-ts-input
                 wire:model="galleryForm.expirationDate"
                 :label="__('Expiration date')"
-                :badge="Auth::user()?->currentTeam?->subscribed() ? __('Optional') : null"
+                :badge="Auth::user()?->currentTeam?->hasUnlimitedRetention() ? __('Optional') : null"
                 type="date"
-                :clearable="Auth::user()?->currentTeam?->subscribed()"
+                :clearable="Auth::user()?->currentTeam?->hasUnlimitedRetention()"
             />
 
-            @if (! Auth::user()?->currentTeam?->subscribed())
+            @unless (Auth::user()?->currentTeam?->hasUnlimitedRetention())
                 <x-ts-callout icon="bolt" variant="secondary">
-                    <x-ts-callout-heading>{{ __('Subscribe for optional expiration') }}</x-ts-callout-heading>
+                    <x-ts-callout-heading>{{ __('Gallery retention') }}</x-ts-callout-heading>
                     <x-ts-callout-text>
-                        {{ __('Subscribe to make gallery expiration dates optional and clearable.') }}
+                        {{ __('Your plan keeps galleries for one year from creation and sends a reminder before they expire. Subscribe to keep them forever.') }}
                     </x-ts-callout-text>
                     <x-slot name="actions">
                         <x-ts-button :href="route('subscribe')" variant="primary">
@@ -433,7 +439,7 @@ new class extends Component
                         </x-ts-button>
                     </x-slot>
                 </x-ts-callout>
-            @endif
+            @endunless
 
             <x-ts-switch
                 wire:model="galleryForm.keepOriginalSize"

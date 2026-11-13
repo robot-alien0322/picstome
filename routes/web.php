@@ -70,6 +70,9 @@ Route::get('/shares/{gallery:ulid}/photos/{photo}/download', function (Gallery $
 
     abort_unless($photo->gallery_id === $gallery->id, 404);
 
+    // Archived photos are part of the photographer's private selection.
+    abort_if($photo->isArchived(), 404);
+
     abort_unless($gallery->is_share_downloadable, 401);
 
     // Eugene fork: ?size=high|medium|low serves a resized copy (Zenfolio-style sizes).
@@ -87,6 +90,8 @@ Route::get('/shares/{gallery:ulid}/photos/{photo}/pdf', function (Gallery $galle
     abort_unless($gallery->is_shared, 404);
 
     abort_unless($photo->gallery_id === $gallery->id, 404);
+
+    abort_if($photo->isArchived(), 404);
 
     abort_unless($photo->isPdf(), 404);
 
@@ -246,6 +251,7 @@ Route::livewire('/admin/translations', 'pages::admin.translations')->name('admin
 Route::livewire('/admin/emails', 'pages::admin.emails')->name('admin.emails')->middleware(['auth', 'verified', EnsureUserIsAdmin::class]);
 
 Route::livewire('/admin/queue', 'pages::admin.queue')->name('admin.queue')->middleware(['auth', 'verified', EnsureUserIsAdmin::class]);
+Route::livewire('/admin/system', 'pages::admin.system')->name('admin.system')->middleware(['auth', 'verified', EnsureUserIsAdmin::class]);
 Route::livewire('/verify-email', 'pages::verify-email')->name('verification.notice')->middleware('auth');
 
 Route::get('/billing-portal', function (Request $request) {

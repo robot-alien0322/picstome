@@ -5,7 +5,9 @@
     'htmlId' => null,
     'asFavorite' => false,
     'asCommented' => false,
+    'asArchived' => false,
     'index' => 0,
+    'viewQuery' => [],
 ])
 
 @php
@@ -31,12 +33,13 @@
     };
 
     $link = match (true) {
-        $isOwner => route('galleries.photos.show', [
+        $isOwner => route('galleries.photos.show', array_filter([
             'gallery' => $gallery,
             'photo' => $photo,
             'navigateFavorites' => $asFavorite ? true : null,
             'navigateCommented' => $asCommented ? true : null,
-        ]),
+            'navigateArchived' => $asArchived ? true : null,
+        ]) + $viewQuery),
         $isPortfolio => route('portfolio.photos.show', [
             'handle' => $gallery->team->handle,
             'gallery' => $gallery,
@@ -55,10 +58,18 @@
     class="group relative mb-1 break-inside-avoid overflow-hidden bg-zinc-100 dark:bg-white/10"
     x-data="{
         showActions: ! window.matchMedia('(hover: hover)').matches,
+        heartPulse: false,
+        pulseHeart() {
+            this.heartPulse = true
+            setTimeout(() => {
+                this.heartPulse = false
+            }, 420)
+        },
     }"
     @if ($isOwner)
         @mouseenter="showActions = true"
         @mouseleave="showActions = false"
+        x-on:favorite-toggled.window="if ($event.detail.id === {{ $photo->id }}) pulseHeart()"
     @endif
     data-photo-card
     data-photo-id="{{ $photo->id }}"
@@ -140,105 +151,115 @@
             </div>
         @endif
 
-        @if (($photo->comments_count ?? 0) > 0)
-            <div class="absolute top-1.5 left-1.5 z-10 flex" @if ($isOwner) :class="showActions ? 'flex' : 'hidden'" @endif>
-                <x-ts-badge icon="chat-bubble-left" size="sm" color="zinc" variant="solid">
-                    {{ $photo->comments_count }}
-                </x-ts-badge>
+        {{-- Top-left: versions and comments. Keeping both here leaves the
+             top-right free for the rating. --}}
+        @if (
+            (($photo->comments_count ?? 0) > 0)
+            || (config('picstome.file_versions_enabled') && $photo->hasStoredVersions() && ($isOwner || $gallery->is_share_versions_visible))
+        )
+            <div class="absolute top-1.5 left-1.5 z-10 flex items-center gap-1">
+                {{-- Current file + retained versions. Never `version_count`:
+                     that is a sequence counter that keeps growing after
+                     versions are deleted, so it would show a stale number. --}}
+                @if (config('picstome.file_versions_enabled') && $photo->hasStoredVersions() && ($isOwner || $gallery->is_share_versions_visible))
+                    <x-ts-badge icon="rectangle-stack" size="sm" color="zinc" variant="solid">
+                        {{ $photo->versionTotalCount() }}
+                    </x-ts-badge>
+                @endif
+
+                @if (($photo->comments_count ?? 0) > 0)
+                    <x-ts-badge icon="chat-bubble-left" size="sm" color="zinc" variant="solid">
+                        {{ $photo->comments_count }}
+                    </x-ts-badge>
+                @endif
             </div>
         @endif
 
-        @if (config('picstome.file_versions_enabled') && $photo->version_count > 1 && ($isOwner || $gallery->is_share_versions_visible))
-            <div class="absolute top-1.5 right-1.5 z-10 flex">
-                <x-ts-badge icon="rectangle-stack" size="sm" color="zinc" variant="solid">
-                    {{ $photo->version_count }}
-                </x-ts-badge>
+        {{-- Photographer-only rating, top-right: only the earned stars, no pill,
+             so it reads as a small mark on the thumbnail instead of a badge. --}}
+        @if ($isOwner && $photo->isRated())
+            <div
+                class="pointer-events-none absolute top-1.5 right-1.5 z-10 flex items-center gap-0.5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)]"
+                data-photo-rating="{{ $photo->rating }}"
+                title="{{ trans_choice(':count star|:count stars', $photo->rating) }}"
+                aria-label="{{ trans_choice(':count star|:count stars', $photo->rating) }}"
+            >
+                <x-rating-stars :rating="$photo->rating" compact filled-only />
             </div>
         @endif
 
         @if ($isOwner)
-            <div class="absolute right-1.5 bottom-1.5 flex flex-row-reverse gap-2" :class="showActions ? 'flex' : 'hidden'">
-                <x-ts-button
-                    wire:click="toggleFavorite({{ $photo->id }})"
-                    variant="overlay"
-                    square
-                    size="sm"
-                    :aria-label="__('Favorite')"
-                >
-                    @if ($photo->isFavorited())
-                        <x-icon name="heart" solid class="size-5 text-red-500" />
-                    @else
-                        <x-icon name="heart" class="size-5" />
-                    @endif
-                </x-ts-button>
+            <x-photo-mini-dock x-bind:class="showActions ? 'flex' : 'hidden'">
+                <x-dock-button
+                    wire:click.preserve-scroll="toggleFavorite({{ $photo->id }})"
+                    icon="heart"
+                    :label="__('Favorite')"
+                    :tone="$photo->isFavorited() ? 'favorite' : 'default'"
+                    compact
+                    x-bind:class="heartPulse ? 'animate-heart-pop' : ''"
+                />
 
-                <x-ts-button
-                    wire:click="requestDeletePhoto({{ $photo->id }})"
+                <x-dock-button
+                    wire:click.preserve-scroll="toggleArchive({{ $photo->id }})"
+                    icon="archive-box"
+                    :label="$photo->isArchived() ? __('Unarchive') : __('Archive')"
+                    :tone="$photo->isArchived() ? 'active' : 'default'"
+                    compact
+                    data-photo-archive
+                />
+
+                <x-dock-button
+                    wire:click.preserve-scroll="requestDeletePhoto({{ $photo->id }})"
                     icon="trash"
-                    variant="danger"
-                    square
-                    size="sm"
-                    :aria-label="__('Delete')"
-                    title="{{ __('Delete') }}"
+                    :label="__('Delete')"
+                    tone="danger"
+                    compact
                     data-photo-delete
                 />
 
                 @if ($photo->isImage())
                     @if ($gallery->coverPhoto?->is($photo))
-                        <x-ts-button
-                            variant="overlay"
-                            square
-                            size="sm"
-                            :aria-label="__('Adjust cover focus')"
-                            title="{{ __('Adjust cover focus') }}"
-                            wire:click="$set('adjustingCover', true)"
+                        <x-dock-button
+                            icon="photo"
+                            :label="__('Adjust cover focus')"
+                            tone="active"
+                            compact
+                            wire:click.preserve-scroll="$set('adjustingCover', true)"
                             data-photo-cover
-                        >
-                            <x-icon name="star" solid class="size-5 text-amber-500" />
-                        </x-ts-button>
+                        />
                     @else
-                        <x-ts-button
-                            icon="star"
-                            variant="overlay"
-                            square
-                            size="sm"
-                            :aria-label="__('Set as cover')"
-                            title="{{ __('Set as cover') }}"
-                            wire:click="setAsCover({{ $photo->id }})"
+                        <x-dock-button
+                            icon="photo"
+                            :label="__('Set as cover')"
+                            compact
+                            wire:click.preserve-scroll="setAsCover({{ $photo->id }})"
                             data-photo-cover
                         />
                     @endif
                 @endif
-            </div>
+            </x-photo-mini-dock>
         @elseif ($isSelectable || $isDownloadable)
-            <div class="absolute right-1.5 bottom-1.5 flex gap-2 transition-opacity md:opacity-0 md:group-hover:opacity-100">
+            <x-photo-mini-dock class="transition-opacity md:opacity-0 md:group-hover:opacity-100">
                 @if ($isSelectable)
-                    <x-ts-button
-                        wire:click="toggleFavorite({{ $photo->id }})"
-                        variant="overlay"
-                        square
-                        size="sm"
-                        :aria-label="__('Favorite')"
-                    >
-                        @if ($photo->isFavorited())
-                            <x-icon name="heart" solid class="size-5 text-red-500" />
-                        @else
-                            <x-icon name="heart" class="size-5" />
-                        @endif
-                    </x-ts-button>
+                    <x-dock-button
+                        wire:click.preserve-scroll="toggleFavorite({{ $photo->id }})"
+                        icon="heart"
+                        :label="__('Favorite')"
+                        :tone="$photo->isFavorited() ? 'favorite' : 'default'"
+                        compact
+                    />
                 @endif
 
                 @if ($isDownloadable)
-                    <x-ts-button
+                    <x-dock-button
                         :href="route('shares.photos.download', ['gallery' => $gallery, 'photo' => $photo])"
                         icon="cloud-arrow-down"
-                        variant="overlay"
-                        square
-                        size="sm"
-                        :aria-label="__('Download')"
+                        :label="__('Download')"
+                        tone="accent"
+                        compact
                     />
                 @endif
-            </div>
+            </x-photo-mini-dock>
         @endif
     @endif
 </div>

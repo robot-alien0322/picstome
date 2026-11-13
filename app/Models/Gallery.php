@@ -10,6 +10,7 @@ use App\Services\GalleryArchiveService;
 use App\Services\PhotoIdentityService;
 use App\Services\StorageUsageService;
 use App\Traits\FormatsFileSize;
+use Carbon\CarbonInterface;
 use Database\Factories\GalleryFactory;
 use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Builder;
@@ -91,6 +92,31 @@ class Gallery extends Model
             }
         });
 
+        // Editing the expiration date must re-arm the reminder email: otherwise
+        // moving the date hides it and the owner is never warned again.
+        static::updated(function (Gallery $gallery) {
+            if (! $gallery->wasChanged('expiration_date')) {
+                return;
+            }
+
+            if ($gallery->expiration_date === null || $gallery->reminder_sent_at === null) {
+                return;
+            }
+
+            $gallery->forceFill(['reminder_sent_at' => null])->saveQuietly();
+        });
+
+        // The gallery header shows its own total; moving galleries between
+        // teams would leave both cached totals stale.
+        static::saved(function (Gallery $gallery) {
+            if (! $gallery->wasChanged('team_id')) {
+                return;
+            }
+
+            StorageUsageService::forgetForGallery($gallery->id);
+            StorageUsageService::forgetForTeam($gallery->getOriginal('team_id'));
+        });
+
         static::deleting(function (Gallery $gallery) {
             try {
                 app(GalleryArchiveService::class)->deleteForGallery($gallery);
@@ -100,15 +126,13 @@ class Gallery extends Model
         });
 
         static::deleted(function (Gallery $gallery) {
-            Cache::forget("gallery:{$gallery->id}:first_image");
-            Cache::forget("gallery:{$gallery->id}:photos_count");
-            Cache::forget("gallery:{$gallery->id}:photos:ids");
-            Cache::forget("gallery:{$gallery->id}:photos:ready:ids");
-            Cache::forget("gallery:{$gallery->id}:favorites:ids");
-            Cache::forget("gallery:{$gallery->id}:commented:ids");
-            Cache::forget("gallery:{$gallery->id}:media_counts");
-            Cache::forget("gallery:{$gallery->id}:download_size");
-            Cache::forget("gallery:{$gallery->id}:comments_count");
+            foreach (Photo::galleryCacheKeys((int) $gallery->id) as $key) {
+                Cache::forget($key);
+            }
+
+            // The row is already gone, so the team id must come from the
+            // in-memory model instead of another lookup.
+            StorageUsageService::forgetForTeam($gallery->team_id);
         });
     }
 
@@ -165,38 +189,60 @@ class Gallery extends Model
     /**
      * Cached, naturally sorted by name photo ids of the gallery.
      *
+     * Archived photos are excluded: they are hidden from every visitor-facing
+     * list, including the public gallery, and only the owner's archived tab
+     * reads them through `archivedPhotoIds()`.
+     *
      * @return Collection<int, int>
      */
     public function photoIds(): Collection
     {
         return Cache::remember("gallery:{$this->id}:photos:ids", now()->addHours(1), function () {
-            return $this->photos()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
+            return $this->photos()->notArchived()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
         });
     }
 
     /**
      * Cached, naturally sorted ids of photos that finished processing and may
      * be shown to visitors. Pending, processing and CDN-warming photos are
-     * intentionally excluded.
+     * intentionally excluded, and so are archived ones.
      *
      * @return Collection<int, int>
      */
     public function readyPhotoIds(): Collection
     {
         return Cache::remember("gallery:{$this->id}:photos:ready:ids", now()->addHours(1), function () {
-            return $this->photos()->ready()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
+            return $this->photos()->ready()->notArchived()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
+        });
+    }
+
+    /**
+     * Cached, naturally sorted ids of the images visitors can page through.
+     *
+     * The portfolio viewer needs the previous and next image of the current
+     * one. Answering that from `readyPhotoIds()` alone would still hydrate
+     * every row twice per visit just to test the extension, so the filter is
+     * applied in SQL once and cached like the other visitor-facing lists.
+     *
+     * @return Collection<int, int>
+     */
+    public function readyImagePhotoIds(): Collection
+    {
+        return Cache::remember("gallery:{$this->id}:photos:ready:image:ids", now()->addHours(1), function () {
+            return $this->photos()->ready()->notArchived()->images()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
         });
     }
 
     /**
      * Cached, naturally sorted by name ids of the gallery's favorited photos.
+     * Archived photos never appear in the client's favorite tab.
      *
      * @return Collection<int, int>
      */
     public function favoritePhotoIds(): Collection
     {
         return Cache::remember("gallery:{$this->id}:favorites:ids", now()->addHours(1), function () {
-            return $this->favorites()->ready()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
+            return $this->favorites()->ready()->notArchived()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
         });
     }
 
@@ -208,8 +254,26 @@ class Gallery extends Model
     public function commentedPhotoIds(): Collection
     {
         return Cache::remember("gallery:{$this->id}:commented:ids", now()->addHours(1), function () {
-            return $this->photos()->ready()->whereHas('comments')->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
+            return $this->photos()->ready()->notArchived()->whereHas('comments')->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
         });
+    }
+
+    /**
+     * Naturally sorted ids of the photos the photographer archived.
+     * Owner-only: this list is never exposed to clients.
+     *
+     * Deliberately **not cached**. This is the one gallery list whose
+     * *presence* decides whether the Archived tab exists, so a one-hour cached
+     * copy made the tab appear late (or not at all) right after archiving, which
+     * is exactly when the photographer looks for it. The query is a single
+     * pluck on an indexed column and only the owner ever runs it, so caching
+     * buys nothing and only adds a staleness window.
+     *
+     * @return Collection<int, int>
+     */
+    public function archivedPhotoIds(): Collection
+    {
+        return $this->photos()->archived()->pluck('name', 'id')->sort(SORT_NATURAL)->keys();
     }
 
     /**
@@ -222,11 +286,18 @@ class Gallery extends Model
     {
         $photos = $this->photos()
             ->whereKey($ids)
-            ->withCount('comments')
+            ->withCount('comments', 'versions')
             ->get()
             ->keyBy('id');
 
-        return EloquentCollection::make($ids->map(fn ($id) => $photos->get($id))->filter()->values()->all());
+        $ordered = $ids->map(fn ($id) => $photos->get($id))->filter()->values();
+
+        // PhotoUrlService reads `$photo->gallery->keep_original_size` for every
+        // CDN URL. The relation is lazy, so a 60-tile wall used to fire 60
+        // duplicate `select * from galleries` queries. They all belong here.
+        return EloquentCollection::make(
+            $ordered->each(fn (Photo $photo) => $photo->setRelation('gallery', $this))->all()
+        );
     }
 
     #[Scope]
@@ -388,6 +459,10 @@ class Gallery extends Model
 
         $sourceName = static::sanitizeFileName($photo->getClientOriginalName());
 
+        // Store first so a failed S3 transfer cannot bump version_count or
+        // snapshot the previous version without a usable replacement.
+        $newPath = $this->storeUploadedPhoto($photo, $sourceName);
+
         $this->prepareNewVersion($existing);
 
         $existing->update([
@@ -397,7 +472,7 @@ class Gallery extends Model
             'size' => $photoSize,
             'stored_size' => $photoSize,
             'stored_hash' => null,
-            'path' => $this->storeUploadedPhoto($photo, $sourceName),
+            'path' => $newPath,
             'thumb_path' => null,
             'raw_path' => null,
             'disk' => 's3',
@@ -506,8 +581,16 @@ class Gallery extends Model
 
     protected function replaceStoredPhoto(UploadedFile $photo, string $path): string
     {
+        $sourceSize = (int) @filesize($photo->getRealPath());
+
         if (FileUploadConfiguration::isUsingS3()) {
-            Storage::disk('s3')->move($photo->getRealPath(), $path);
+            $moved = Storage::disk('s3')->move($photo->getRealPath(), $path);
+
+            if (! $moved) {
+                throw new \RuntimeException('Could not replace the current photo in storage.');
+            }
+
+            $this->verifyStoredPhoto($path, $sourceSize);
 
             return $path;
         }
@@ -518,23 +601,72 @@ class Gallery extends Model
             name: basename($path),
         );
 
-        if (! $stored) {
+        if (! is_string($stored) || $stored === '') {
             throw new \RuntimeException('Could not replace the current photo.');
         }
+
+        $this->verifyStoredPhoto($stored, $sourceSize);
 
         return $stored;
     }
 
+    /**
+     * Detect the silent S3 failures where move()/putFileAs() return success but
+     * the object is missing or incomplete. Without this the API stores a row
+     * that ProcessPhoto can never read, leaving a broken photo in the gallery.
+     */
+    protected function verifyStoredPhoto(string $path, int $sourceSize): void
+    {
+        try {
+            $exists = Storage::disk('s3')->exists($path);
+            $storedSize = $exists ? (int) Storage::disk('s3')->size($path) : 0;
+        } catch (Throwable $exception) {
+            throw new \RuntimeException(
+                'Could not verify the uploaded photo in S3.',
+                0,
+                $exception,
+            );
+        }
+
+        if (! $exists) {
+            throw new \RuntimeException('The uploaded photo is missing from S3.');
+        }
+
+        if ($sourceSize > 0 && $storedSize !== $sourceSize) {
+            throw new \RuntimeException('The uploaded photo is incomplete in S3.');
+        }
+    }
+
     protected function storeUploadedPhoto(UploadedFile $photo, string $sourceName): string
     {
+        $sourceSize = (int) @filesize($photo->getRealPath());
+
         if (FileUploadConfiguration::isUsingS3()) {
             $path = $this->storage_path.'/'.Str::ulid().'-'.$sourceName;
-            Storage::disk('s3')->move($photo->getRealPath(), $path);
+
+            // Laravel's move() returns false when the S3 transfer fails instead
+            // of throwing. Without this check the database would point at a
+            // missing object and ProcessPhoto would fail much later.
+            $moved = Storage::disk('s3')->move($photo->getRealPath(), $path);
+
+            if (! $moved) {
+                throw new \RuntimeException('Could not store the uploaded photo in S3.');
+            }
+
+            $this->verifyStoredPhoto($path, $sourceSize);
 
             return $path;
         }
 
-        return $photo->store(path: $this->storage_path, options: ['disk' => 's3']);
+        $stored = $photo->store(path: $this->storage_path, options: ['disk' => 's3']);
+
+        if (! is_string($stored) || $stored === '') {
+            throw new \RuntimeException('Could not store the uploaded photo.');
+        }
+
+        $this->verifyStoredPhoto($stored, $sourceSize);
+
+        return $stored;
     }
 
     /**
@@ -543,11 +675,10 @@ class Gallery extends Model
     protected function deleteUnreferencedPath(Photo $photo, ?string $path, ?string $rawPath, string $disk): void
     {
         foreach (array_filter([$path, $rawPath]) as $candidate) {
-            $referenced = $photo->versions()
-                ->where(function ($query) use ($candidate) {
-                    $query->where('path', $candidate)->orWhere('raw_path', $candidate);
-                })
-                ->exists();
+            // Split by column instead of `where(...)->orWhere(...)`: MySQL
+            // cannot use an index across an OR of different columns.
+            $referenced = $photo->versions()->where('path', $candidate)->exists()
+                || $photo->versions()->where('raw_path', $candidate)->exists();
 
             if (! $referenced) {
                 DeleteFromDisk::dispatch($candidate, $disk);
@@ -794,11 +925,54 @@ class Gallery extends Model
 
     public function makePrivate()
     {
+        // A gallery may not outlive one year from its creation unless the team
+        // has an active subscription, so turning a public gallery private
+        // cannot be used to reset the clock indefinitely.
+        $cap = $this->retentionCap();
+        $expiration = now()->addMonth();
+
+        if ($cap !== null && $expiration->gt($cap)) {
+            $expiration = $cap;
+        }
+
         $this->update([
             'is_public' => false,
             'portfolio_order' => null,
-            'expiration_date' => now()->addMonth(),
+            'expiration_date' => $expiration,
         ]);
+    }
+
+    /**
+     * Latest date this gallery may expire, or null when the team keeps
+     * galleries forever.
+     *
+     * Free and lifetime galleries are capped at one year from creation. A
+     * gallery that already passed its cap keeps its current date, and one with
+     * no date gets a month of grace, so enabling the rule never deletes
+     * something the owner did not choose.
+     */
+    public function retentionCap(): ?CarbonInterface
+    {
+        if ($this->team?->hasUnlimitedRetention()) {
+            return null;
+        }
+
+        $cap = $this->created_at->copy()->addYear();
+
+        // Galleries created before the retention rule may already be past it.
+        if ($cap->isPast()) {
+            $current = $this->expiration_date;
+
+            return $current?->isFuture() ? $current->copy() : now()->addMonth();
+        }
+
+        $current = $this->expiration_date;
+
+        if ($current?->gt($cap)) {
+            return $current->copy();
+        }
+
+        return $cap;
     }
 
     public function reorder(int $newOrder): void
@@ -835,13 +1009,18 @@ class Gallery extends Model
      */
     public function firstImage()
     {
-        return Cache::remember("gallery:{$this->id}:first_image", now()->addHours(24), function () {
+        $photo = Cache::remember("gallery:{$this->id}:first_image", now()->addHours(24), function () {
             if ($this->relationLoaded('photos')) {
-                return $this->photos->first(fn (Photo $photo) => $photo->isImage());
+                return $this->photos->first(fn (Photo $photo) => $photo->isImage() && ! $photo->isArchived());
             }
 
             return $this->firstImagePhoto;
         });
+
+        // The relation is attached after the cache read, never inside it: the
+        // cached row must not embed a snapshot of this gallery, or a later
+        // `keep_original_size` change would keep resolving the old CDN variant.
+        return $photo?->setRelation('gallery', $this);
     }
 
     /**
@@ -863,22 +1042,27 @@ class Gallery extends Model
     {
         return Cache::remember("gallery:{$this->id}:media_counts", now()->addHours(1), function (): array {
             return [
-                'all' => $this->photos()->ready()->count(),
-                'images' => $this->photos()->ready()->images()->count(),
-                'videos' => $this->photos()->ready()->where(function (Builder $query) {
+                'all' => $this->photos()->ready()->notArchived()->count(),
+                'images' => $this->photos()->ready()->notArchived()->images()->count(),
+                'videos' => $this->photos()->ready()->notArchived()->where(function (Builder $query) {
                     foreach (['mp4', 'webm', 'ogg'] as $extension) {
                         $query->orWhere('path', 'like', '%.'.$extension);
                     }
                 })->count(),
-                'pdfs' => $this->photos()->ready()->where('path', 'like', '%.pdf')->count(),
+                'pdfs' => $this->photos()->ready()->notArchived()->where('path', 'like', '%.pdf')->count(),
             ];
         });
     }
 
+    /**
+     * Rough ZIP size, answered by one aggregate query over the photo rows.
+     * The exact size is stored on `gallery_archives.size_bytes` once the ZIP
+     * is built, so the UI never needs to look at the bucket.
+     */
     public function downloadSize(): int
     {
         return Cache::remember("gallery:{$this->id}:download_size", now()->addHours(1), function (): int {
-            return app(GalleryArchiveService::class)->estimatedSizeForPhotos($this->photos()->ready()->cursor());
+            return app(GalleryArchiveService::class)->estimatedSize($this, 'all');
         });
     }
 
@@ -888,6 +1072,20 @@ class Gallery extends Model
             return PhotoComment::query()
                 ->whereHas('photo', fn (Builder $query) => $query->where('gallery_id', $this->id))
                 ->count();
+        });
+    }
+
+    /**
+     * Rated photos in this gallery, for the owner header summary.
+     *
+     * Cached for an hour like the rest of the gallery counters. The key is
+     * dropped by `Photo::galleryCacheKeys()` on every photo write, so a rating
+     * is visible immediately; the TTL is only a safety net.
+     */
+    public function ratedPhotoCount(): int
+    {
+        return Cache::remember("gallery:{$this->id}:rated_count", now()->addHours(1), function (): int {
+            return $this->photos()->rated()->count();
         });
     }
 

@@ -11,6 +11,7 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\File;
 use Illuminate\Support\Facades\Concurrency;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -151,16 +152,56 @@ class GalleryArchiveService
      */
     public function estimate(Gallery $gallery, string $variant = 'all'): array
     {
-        $photos = $this->photosQuery($gallery, $this->normalizeVariant($variant))
-            ->select(['id', 'path', 'raw_path', 'thumb_path', 'disk', 'size', 'stored_size', 'width', 'height'])
-            ->get();
+        $query = $this->photosQuery($gallery, $this->normalizeVariant($variant));
 
         $size = self::sizeFromVariant($variant);
 
         return [
-            'count' => $photos->count(),
-            'bytes' => $size ? $this->estimatedSizedBytes($photos, $size) : $this->estimatedSizeForPhotos($photos),
+            'count' => (clone $query)->count(),
+            // Eugene fork: sized ZIP variants (all@low, set:15@medium...) scale the estimate by pixel count
+            'bytes' => $size
+                ? $this->estimatedSizedBytes((clone $query)->get(['id', 'path', 'raw_path', 'disk', 'size', 'stored_size', 'width', 'height']), $size)
+                : $this->estimatedSizeForPhotos((clone $query)->get(['id', 'path', 'raw_path', 'disk', 'size', 'stored_size'])),
         ];
+    }
+
+    /**
+     * Approximate ZIP size, answered by one aggregate query over the photo
+     * rows. The exact size is only known once the ZIP is built and stored on
+     * `gallery_archives.size_bytes`, so nothing here may list or stat objects
+     * in the bucket: that turned a 221-photo gallery into ~440 S3 HEADs.
+     */
+    public function estimatedSize(Gallery $gallery, string $variant = 'all'): int
+    {
+        return (int) $this->photosQuery($gallery, $this->normalizeVariant($variant))
+            ->sum(DB::raw($this->estimatedBytesExpression()));
+    }
+
+    /**
+     * SQL equivalent of `estimatedSizeForPhoto()`. Thumbnails never travel in
+     * the ZIP, so a normal image contributes exactly `size` (the processed
+     * file). A gallery that keeps the original RAW stores `size` = RAW and
+     * `stored_size` = processed + thumbnail + RAW, so the processed part is
+     * `stored_size - size`; that includes the thumbnail and therefore
+     * overestimates by a few KB per photo, which is fine for an estimate.
+     * Videos and PDFs have no thumbnail copy in the ZIP and use `stored_size`.
+     */
+    protected function estimatedBytesExpression(): string
+    {
+        $size = 'COALESCE(size, 0)';
+        $stored = 'COALESCE(stored_size, 0)';
+        $processed = "CASE WHEN {$stored} > {$size} THEN {$stored} - {$size} ELSE {$size} END";
+        $notSupported = "LOWER(path) NOT LIKE '%.jpg' AND LOWER(path) NOT LIKE '%.jpeg' AND LOWER(path) NOT LIKE '%.png'"
+            ." AND LOWER(path) NOT LIKE '%.tiff' AND LOWER(path) NOT LIKE '%.mp4' AND LOWER(path) NOT LIKE '%.webm'"
+            ." AND LOWER(path) NOT LIKE '%.ogg' AND LOWER(path) NOT LIKE '%.pdf'";
+        $isImage = "LOWER(path) LIKE '%.jpg' OR LOWER(path) LIKE '%.jpeg' OR LOWER(path) LIKE '%.png' OR LOWER(path) LIKE '%.tiff'";
+
+        return 'CASE'
+            ." WHEN {$notSupported} THEN 0"
+            ." WHEN ({$isImage}) AND raw_path IS NOT NULL AND raw_path <> '' THEN {$processed}"
+            ." WHEN {$isImage} THEN CASE WHEN {$size} > 0 THEN {$size} ELSE {$stored} END"
+            ." ELSE CASE WHEN {$stored} > 0 THEN {$stored} ELSE {$size} END"
+            .' END';
     }
 
     /**
@@ -261,42 +302,13 @@ class GalleryArchiveService
             return 0;
         }
 
-        // Thumbnails count towards storage usage but are not part of the ZIP.
-        if ($photo->isImage()) {
-            // Eugene fork: the thumbnail size is only needed for RAW photos or when size is
-            // missing. Skipping it otherwise avoids two S3 calls per photo on every re-render,
-            // which made uploads into large galleries crawl (result is identical).
-            if (! $photo->raw_path && $photo->size) {
-                return (int) $photo->size;
-            }
+        if ($photo->isImage() && $photo->raw_path) {
+            $processedSize = (int) $photo->stored_size - (int) $photo->size;
 
-            $thumbnailBytes = $this->thumbnailBytes($photo);
-
-            if ($photo->raw_path) {
-                $processedSize = max(0, (int) $photo->stored_size - (int) $photo->size - $thumbnailBytes);
-
-                return $processedSize > 0 ? $processedSize : (int) $photo->size;
-            }
-
-            return (int) ($photo->size ?: max(0, (int) $photo->stored_size - $thumbnailBytes));
+            return $processedSize > 0 ? $processedSize : (int) $photo->size;
         }
 
-        return (int) ($photo->stored_size ?: $photo->size);
-    }
-
-    protected function thumbnailBytes(Photo $photo): int
-    {
-        if (! $photo->thumb_path) {
-            return 0;
-        }
-
-        try {
-            return Storage::disk($photo->diskOrDefault())->exists($photo->thumb_path)
-                ? (int) Storage::disk($photo->diskOrDefault())->size($photo->thumb_path)
-                : 0;
-        } catch (Throwable) {
-            return 0;
-        }
+        return (int) ($photo->size ?: $photo->stored_size);
     }
 
     /**
@@ -310,7 +322,7 @@ class GalleryArchiveService
         }
 
         return (int) $this->photosQuery($gallery, $variant)
-            ->get(['id', 'path', 'raw_path', 'thumb_path', 'disk', 'size', 'stored_size'])
+            ->get(['id', 'path', 'raw_path', 'disk', 'size', 'stored_size'])
             ->map(fn (Photo $photo): int => $this->estimatedSizeForPhoto($photo))
             ->filter(fn (int $bytes): bool => $bytes > 0)
             ->sortDesc()
@@ -1153,11 +1165,13 @@ class GalleryArchiveService
         [$base] = self::splitVariant($variant);
 
         // Eugene fork: "set:<id>" = one gallery set
+        // Archived photos are never shipped: the customer ZIP is exactly the
+        // selection the photographer wants them to see.
         if ($setId = self::setIdFromVariant($base)) {
-            return $gallery->photos()->where('gallery_set_id', $setId)->ready();
+            return $gallery->photos()->where('gallery_set_id', $setId)->ready()->notArchived();
         }
 
-        return ($base === 'favorites' ? $gallery->favorites() : $gallery->photos())->ready();
+        return ($base === 'favorites' ? $gallery->favorites() : $gallery->photos())->ready()->notArchived();
     }
 
     protected function normalizeVariant(string $variant): string
