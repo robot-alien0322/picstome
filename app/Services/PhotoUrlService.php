@@ -180,7 +180,10 @@ class PhotoUrlService
             return '';
         }
 
-        $height = $this->keepOriginalSize
+        // Eugene fork: with local images a 4096 box is resized on this server from the full original
+        // (~13 s and ~1 GB RAM per photo) every time a viewer or the close-up panel asks for it. Use the
+        // 2048 box every photo already has instead; true native pixels stay available via original().
+        $height = $this->keepOriginalSize && ! config('fork.local_images')
             ? config('picstome.photo_resize', 2048) * 2
             : config('picstome.photo_resize', 2048);
         $width = $height;
