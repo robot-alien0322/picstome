@@ -63,7 +63,17 @@ Route::get('/img/{path}', function (string $path) {
         'Content-Type' => 'image/webp',
         'Cache-Control' => 'public, max-age=31536000, immutable',
     ]);
-})->where('path', 'teams/.+')->name('fork.image');
+})->where('path', 'teams/.+')->name('fork.image')
+    // No session/cookies on images: a Set-Cookie header makes Cloudflare skip caching (BYPASS), so every
+    // image view came from the home connection. Without them Cloudflare serves repeat views from its edge.
+    ->withoutMiddleware([
+        \Illuminate\Cookie\Middleware\EncryptCookies::class,
+        \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
+        \Illuminate\Session\Middleware\StartSession::class,
+        \Illuminate\View\Middleware\ShareErrorsFromSession::class,
+        \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
+        \App\Http\Middleware\SetLocale::class,
+    ]);
 
 Route::get('/shares/{gallery:ulid}/photos/{photo}/download', function (Gallery $gallery, Photo $photo) {
     abort_unless($gallery->is_shared, 404);
