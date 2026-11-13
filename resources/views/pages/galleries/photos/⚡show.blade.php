@@ -643,7 +643,7 @@ new #[Layout('layouts.app', ['fullScreen' => true])] class extends Component
         },
         initPhotoViewer() {
             const source = this.$el.dataset.fullImageUrl
-            if (source) {
+            if (source && ! @js((bool) config('fork.local_images'))) { // Eugene fork: fetched on zoom instead
                 const image = new Image()
                 image.src = source
             }
@@ -896,6 +896,7 @@ new #[Layout('layouts.app', ['fullScreen' => true])] class extends Component
                 :class="loaded || errored ? '' : 'animate-pulse bg-black/60 dark:bg-white/60 h-full w-full'"
                 alt="{{ $photo->name }}"
                 x-cloak
+                loading="lazy" {{-- Eugene fork: only fetched when zooming (resized on this server) --}}
                 data-full-image
             />
 
@@ -1244,18 +1245,24 @@ new #[Layout('layouts.app', ['fullScreen' => true])] class extends Component
 @endif
 
 @push('head')
-    @if ($photo->isImage())
+    {{-- Eugene fork: with local images the full-size zoom image is resized on this server, so it is
+         only fetched when zooming (then cached) - not preloaded for this, next and previous photo. --}}
+    @if ($photo->isImage() && ! config('fork.local_images'))
         <link rel="preload" as="image" href="{{ $photo->url }}" />
     @endif
 
     @if ($next && $next->isImage())
-        <link rel="preload" as="image" href="{{ $next->url }}" />
+        @unless (config('fork.local_images'))
+            <link rel="preload" as="image" href="{{ $next->url }}" />
+        @endunless
         <link rel="preload" as="image" href="{{ $next->thumbnail_url }}" />
         <link rel="preload" as="image" href="{{ $next->large_thumbnail_url }}" />
     @endif
 
     @if ($previous && $previous->isImage())
-        <link rel="preload" as="image" href="{{ $previous->url }}" />
+        @unless (config('fork.local_images'))
+            <link rel="preload" as="image" href="{{ $previous->url }}" />
+        @endunless
         <link rel="preload" as="image" href="{{ $previous->thumbnail_url }}" />
         <link rel="preload" as="image" href="{{ $previous->large_thumbnail_url }}" />
     @endif

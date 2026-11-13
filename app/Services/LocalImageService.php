@@ -59,6 +59,26 @@ class LocalImageService
             return $cached;
         }
 
+        // One render at a time: a burst of requests (viewer preloads, several visitors) used to
+        // decode several 33 MP originals at once and starve the VM of CPU and RAM. Others wait,
+        // then usually find the file already rendered.
+        $lock = fopen($dir.'/.render.lock', 'c');
+        flock($lock, LOCK_EX);
+
+        try {
+            if (is_file($cached)) {
+                return $cached;
+            }
+
+            return $this->render($path, $box, $disk, $dir, $cached);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private function render(string $path, int $box, string $disk, string $dir, string $cached): string
+    {
         $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION)) ?: 'jpg';
         $source = $dir.'/src-'.Str::ulid().'.'.$extension;
         $partial = $dir.'/part-'.Str::ulid().'.webp';

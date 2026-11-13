@@ -385,7 +385,8 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             // Only images are preloaded with `new Image()`: handing an mp4 to
             // the image cache would waste a request, and the player already
             // fetches the video it needs.
-            if (this.photoUrl && @js($photo->isImage())) {
+            // Eugene fork: website style has no zoom, so the full-size image is never shown - don't fetch it
+            if (this.photoUrl && @js($photo->isImage() && ! config('fork.website_style'))) {
                 const image = new Image()
                 image.src = this.photoUrl
             }
@@ -593,7 +594,7 @@ new #[Layout('layouts.guest', ['fullScreen' => true, 'hideSourceLink' => true /*
             // Preload the full photo URL. Videos are excluded on purpose: the
             // player fetches its own bytes, and an mp4 in the image cache is a
             // wasted request.
-            if (this.photoUrl && @js($photo->isImage())) {
+            if (this.photoUrl && @js($photo->isImage() && ! config('fork.website_style'))) {
                 const img = new Image()
                 img.src = this.photoUrl
             }
