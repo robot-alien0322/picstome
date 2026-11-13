@@ -23,4 +23,8 @@ return [
 
     // Resize grid/viewer images on this server (/img/...) instead of the external CDN (wsrv.nl).
     'local_images' => (bool) env('PICSTOME_LOCAL_IMAGES', false),
+
+    // Self-hosted: galleries never expire on their own (upstream caps free/lifetime galleries at one
+    // year and deletes them after). A date set by hand on a gallery still applies.
+    'unlimited_retention' => (bool) env('PICSTOME_UNLIMITED_RETENTION', true),
 ];

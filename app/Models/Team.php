@@ -574,6 +574,11 @@ class Team extends Model
      */
     public function hasUnlimitedRetention(): bool
     {
+        // Eugene fork: self-hosted, galleries never expire unless a date is set by hand
+        if (config('fork.unlimited_retention')) {
+            return true;
+        }
+
         if ($this->lifetime_at !== null) {
             return false;
         }

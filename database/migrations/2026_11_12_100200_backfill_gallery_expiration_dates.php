@@ -25,6 +25,11 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // Eugene fork: self-hosted galleries do not expire, so leave them without a date
+        if (config('fork.unlimited_retention')) {
+            return;
+        }
+
         $oneYearAgo = now()->subYear();
         $graceDate = now()->addMonth()->toDateString();
 
