@@ -50,6 +50,58 @@ class FastResize
         $im->clear();
     }
 
+    /**
+     * Several sizes from ONE decode of the source (largest first, each made from the previous one).
+     * Each output: ['box' => int, 'format' => 'webp'|'jpeg', 'dest' => path, 'quality' => int].
+     */
+    public static function multi(string $source, array $outputs): void
+    {
+        usort($outputs, fn ($a, $b) => $b['box'] <=> $a['box']);
+        $max = $outputs[0]['box'];
+
+        if (! class_exists(Imagick::class) || $max > 2048) {
+            foreach ($outputs as $o) {
+                self::toFile($source, $o['dest'], $o['box'], $o['format'], $o['quality'] ?? 90);
+            }
+
+            return;
+        }
+
+        $im = new Imagick;
+        $im->setOption('jpeg:size', (2 * $max).'x'.(2 * $max));
+        $im->readImage($source);
+        self::autoOrient($im);
+
+        $profiles = $im->getImageProfiles('icc', true);
+        $im->stripImage();
+        if (! empty($profiles['icc'])) {
+            $im->profileImage('icc', $profiles['icc']);
+        }
+
+        foreach ($outputs as $n => $o) {
+            if (max($im->getImageWidth(), $im->getImageHeight()) > $o['box']) {
+                $im->resizeImage($o['box'], $o['box'], Imagick::FILTER_LANCZOS, 1, true);
+
+                // Full sharpening on the first size; smaller sizes are made from that already-sharpened
+                // image, so they only get a light touch (matches the single-size result).
+                $im->unsharpMaskImage(0, 0.6, $n === 0 ? 0.5 : 0.25, 0.02);
+            }
+
+            $out = clone $im;
+            $out->setImageFormat($o['format']);
+            $out->setImageCompressionQuality($o['quality'] ?? 90);
+
+            if ($o['format'] === 'jpeg') {
+                $out->setInterlaceScheme(Imagick::INTERLACE_PLANE);
+            }
+
+            $out->writeImage($o['format'].':'.$o['dest']);
+            $out->clear();
+        }
+
+        $im->clear();
+    }
+
     private static function autoOrient(Imagick $im): void
     {
         switch ($im->getImageOrientation()) {

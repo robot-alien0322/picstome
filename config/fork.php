@@ -27,4 +27,7 @@ return [
     // Self-hosted: galleries never expire on their own (upstream caps free/lifetime galleries at one
     // year and deletes them after). A date set by hand on a gallery still applies.
     'unlimited_retention' => (bool) env('PICSTOME_UNLIMITED_RETENTION', true),
+
+    // How many image renders may run at once (web requests + queue workers together).
+    'render_slots' => (int) env('PICSTOME_RENDER_SLOTS', 2),
 ];

@@ -53,28 +53,22 @@ class LocalImageService
             @mkdir($dir, 0775, true);
         }
 
-        $cached = $dir.'/'.sha1($disk.'|'.$path).'-'.$box.'.webp';
+        $cached = $this->cacheFile($path, $box, $disk);
 
         if (is_file($cached)) {
             return $cached;
         }
 
-        // One render at a time: a burst of requests (viewer preloads, several visitors) used to
-        // decode several 33 MP originals at once and starve the VM of CPU and RAM. Others wait,
-        // then usually find the file already rendered.
-        $lock = fopen($dir.'/.render.lock', 'c');
-        flock($lock, LOCK_EX);
+        // Limited number of renders at once (RenderSlots): bursts used to decode several 33 MP
+        // originals in parallel and starve the VM. Waiters usually find the file already made.
+        return \App\Support\RenderSlots::run(
+            fn () => is_file($cached) ? $cached : $this->render($path, $box, $disk, $dir, $cached)
+        );
+    }
 
-        try {
-            if (is_file($cached)) {
-                return $cached;
-            }
-
-            return $this->render($path, $box, $disk, $dir, $cached);
-        } finally {
-            flock($lock, LOCK_UN);
-            fclose($lock);
-        }
+    private function cacheFile(string $path, int $box, string $disk): string
+    {
+        return storage_path('app/img-cache').'/'.sha1($disk.'|'.$path).'-'.$box.'.webp';
     }
 
     private function render(string $path, int $box, string $disk, string $dir, string $cached): string
@@ -109,8 +103,50 @@ class LocalImageService
             return;
         }
 
-        foreach ([(int) config('picstome.photo_thumb_resize', 1000), (int) config('picstome.photo_resize', 2048)] as $box) {
-            $this->cachedPath($photo->path, $box, $photo->diskOrDefault());
-        }
+        $disk = $photo->diskOrDefault();
+        $boxes = [(int) config('picstome.photo_resize', 2048), (int) config('picstome.photo_thumb_resize', 1000)];
+
+        // Eugene fork: both sizes from one download + one decode of the original (was one each)
+        \App\Support\RenderSlots::run(function () use ($photo, $disk, $boxes) {
+            $outputs = [];
+            foreach ($boxes as $box) {
+                $cached = $this->cacheFile($photo->path, $box, $disk);
+                if (! is_file($cached)) {
+                    $outputs[] = ['box' => $box, 'format' => 'webp', 'quality' => 90, 'cached' => $cached,
+                        'dest' => dirname($cached).'/part-'.Str::ulid().'.webp'];
+                }
+            }
+
+            if (! $outputs) {
+                return;
+            }
+
+            $dir = dirname($outputs[0]['cached']);
+            if (! is_dir($dir)) {
+                @mkdir($dir, 0775, true);
+            }
+
+            $extension = strtolower(pathinfo($photo->path, PATHINFO_EXTENSION)) ?: 'jpg';
+            $source = $dir.'/src-'.Str::ulid().'.'.$extension;
+
+            $in = Storage::disk($disk)->readStream($photo->path);
+            abort_unless(is_resource($in), 404);
+            $out = fopen($source, 'w');
+            stream_copy_to_stream($in, $out);
+            fclose($in);
+            fclose($out);
+
+            try {
+                \App\Support\FastResize::multi($source, $outputs);
+                foreach ($outputs as $o) {
+                    rename($o['dest'], $o['cached']);
+                }
+            } finally {
+                @unlink($source);
+                foreach ($outputs as $o) {
+                    @unlink($o['dest']);
+                }
+            }
+        });
     }
 }

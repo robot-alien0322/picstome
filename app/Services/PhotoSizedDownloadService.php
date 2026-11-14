@@ -102,7 +102,7 @@ class PhotoSizedDownloadService
         fclose($out);
 
         try {
-            \App\Support\FastResize::toFile($source, $partial, $px, 'jpeg', 90);
+            \App\Support\RenderSlots::run(fn () => \App\Support\FastResize::toFile($source, $partial, $px, 'jpeg', 90));
             rename($partial, $cached); // atomic: a parallel request never sees a half-written file
         } finally {
             @unlink($source);
