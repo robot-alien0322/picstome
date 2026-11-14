@@ -120,7 +120,7 @@ new class extends Component
                         </div>
                         <div class="text-xs text-zinc-500">
                             {{ trans_choice(':n download|:n downloads', (int) $row->downloads, ['n' => (int) $row->downloads]) }}
-                            · {{ __('first :t', ['t' => \Illuminate\Support\Carbon::parse($row->first_seen)->format('M j, Y g:ia')]) }}
+                            · {{ __('first :t', ['t' => \Illuminate\Support\Carbon::parse($row->first_seen, 'UTC')->timezone(config('fork.display_timezone'))->format('M j, Y g:ia')]) }}
                         </div>
                     </div>
                 @endforeach
@@ -136,7 +136,7 @@ new class extends Component
             <div class="divide-y divide-zinc-800/10 rounded-lg border border-zinc-800/10 text-sm dark:divide-white/10 dark:border-white/15">
                 @foreach ($this->recent as $a)
                     <div wire:key="act-{{ $a->id }}" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
-                        <span class="w-36 shrink-0 text-xs text-zinc-500" title="{{ $a->created_at }}">{{ $a->created_at->format('M j, g:ia') }}</span>
+                        <span class="w-36 shrink-0 text-xs text-zinc-500" title="{{ $a->created_at->timezone(config('fork.display_timezone'))->format('Y-m-d H:i:s T') }}">{{ $a->created_at->timezone(config('fork.display_timezone'))->format('M j, g:ia') }}</span>
                         <span @class([
                             'rounded px-1.5 py-0.5 text-xs font-medium',
                             'bg-zinc-100 text-zinc-700 dark:bg-white/10 dark:text-zinc-300' => $a->type === 'visit',

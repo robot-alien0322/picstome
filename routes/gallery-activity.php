@@ -20,11 +20,14 @@ Route::get('/galleries/{gallery}/activity/emails.csv', function (Gallery $galler
         ->orderBy('first_seen')
         ->get();
 
-    return response()->streamDownload(function () use ($rows) {
+    $tz = config('fork.display_timezone');
+    $local = fn ($t) => $t ? \Illuminate\Support\Carbon::parse($t, 'UTC')->timezone($tz)->format('Y-m-d H:i:s') : null;
+
+    return response()->streamDownload(function () use ($rows, $tz, $local) {
         $out = fopen('php://output', 'w');
-        fputcsv($out, ['email', 'name', 'first_seen', 'last_seen', 'downloads']);
+        fputcsv($out, ['email', 'name', "first_seen ($tz)", "last_seen ($tz)", 'downloads']);
         foreach ($rows as $r) {
-            fputcsv($out, [$r->email, $r->name, $r->first_seen, $r->last_seen, (int) $r->downloads]);
+            fputcsv($out, [$r->email, $r->name, $local($r->first_seen), $local($r->last_seen), (int) $r->downloads]);
         }
         fclose($out);
     }, str($gallery->name)->slug().'-emails.csv', ['Content-Type' => 'text/csv']);

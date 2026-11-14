@@ -28,6 +28,10 @@ return [
     // year and deletes them after). A date set by hand on a gallery still applies.
     'unlimited_retention' => (bool) env('PICSTOME_UNLIMITED_RETENTION', true),
 
+    // Times shown to the photographer (gallery activity, email CSV) in this zone. Storage stays UTC.
+    // Empty = app.timezone.
+    'display_timezone' => env('PICSTOME_DISPLAY_TIMEZONE') ?: env('APP_TIMEZONE', 'UTC'),
+
     // How many image renders may run at once (web requests + queue workers together).
     'render_slots' => (int) env('PICSTOME_RENDER_SLOTS', 2),
 ];

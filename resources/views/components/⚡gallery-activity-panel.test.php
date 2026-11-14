@@ -157,3 +157,13 @@ test('owner can export emails as csv', function () {
     $csv = $this->get(route('galleries.activity.emails', $this->gallery))->assertOk()->streamedContent();
     expect($csv)->toContain('email,name')->toContain('a@b.co,Al');
 });
+
+test('activity times are shown in the display time zone', function () {
+    config(['fork.display_timezone' => 'America/Chicago']);
+    $a = GalleryActivity::create(['gallery_id' => $this->gallery->id, 'type' => 'email', 'email' => 'a@b.co', 'name' => 'Al']);
+    $a->forceFill(['created_at' => '2026-11-14 16:30:00'])->save();
+    actingAs($this->user);
+
+    $csv = $this->get(route('galleries.activity.emails', $this->gallery))->assertOk()->streamedContent();
+    expect($csv)->toContain('first_seen (America/Chicago)')->toContain('2026-11-14 10:30:00');
+});
