@@ -315,7 +315,7 @@ it('falls back to the legacy streamed download when archives are disabled', func
 });
 
 it('redirects shared downloads to the shared gallery download tab while preparing', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC']);
+    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
 
     get(route('shares.download', $gallery))
@@ -333,7 +333,7 @@ it('redirects shared downloads to the shared gallery download tab while preparin
 });
 
 it('serves a ready shared archive through a presigned url', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC']);
+    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
 
     $archive = makeGalleryArchive($gallery);
@@ -349,7 +349,7 @@ it('serves a ready shared archive through a presigned url', function () {
 });
 
 it('enforces the shared download flags before creating an archive', function () {
-    $shared = Gallery::factory()->shared()->undownloadable()->for($this->team)->create(['ulid' => '0123ABC']);
+    $shared = Gallery::factory()->shared()->undownloadable()->for($this->team)->create(['ulid' => '0123ABC', 'require_download_email' => false]); // Eugene fork: no email gate
     $shared->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
 
     get(route('shares.download', $shared))->assertStatus(401);
@@ -436,7 +436,7 @@ it('deletes an archive object through the retry job', function () {
 });
 
 it('does not generate a zip when the shared gallery is viewed', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC']);
+    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
 
     Livewire::test('pages::shares.show', ['gallery' => $gallery, 'slug' => $gallery->slug]);
@@ -471,7 +471,7 @@ it('rejects an archive that belongs to another gallery', function () {
 });
 
 it('serves a shared archive through its direct route and enforces download flags', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC']);
+    $gallery = Gallery::factory()->shared()->downloadable()->for($this->team)->create(['ulid' => '0123ABC', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
     $archive = makeGalleryArchive($gallery);
 
