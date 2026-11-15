@@ -113,3 +113,9 @@ it('deleting a photo on R2 also removes its home copy', function () {
     Storage::disk('r2')->assertMissing($photo->path);
     Storage::disk('s3')->assertMissing($photo->path);
 });
+
+it('renders R2 photos from the home copy and shares its image cache', function () {
+    expect(\App\Services\LocalImageService::sourceDisk('r2'))->toBe('s3')
+        ->and(\App\Services\LocalImageService::sourceDisk('s3'))->toBe('s3')
+        ->and(\App\Services\LocalImageService::sourceDisk('public'))->toBe('public');
+});

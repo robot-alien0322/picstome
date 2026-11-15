@@ -93,7 +93,7 @@ class PhotoSizedDownloadService
         $source = dirname($cached).'/src-'.Str::ulid().'.'.$extension;
         $partial = dirname($cached).'/part-'.Str::ulid().'.jpg';
 
-        $in = Storage::disk($photo->diskOrDefault())->readStream($photo->path);
+        $in = Storage::disk(\App\Services\LocalImageService::sourceDisk($photo->diskOrDefault()))->readStream($photo->path); // Eugene fork: home copy
         abort_unless(is_resource($in), 404);
 
         $out = fopen($source, 'w');

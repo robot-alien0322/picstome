@@ -47,6 +47,7 @@ class LocalImageService
     /** Local cached webp for this stored photo path at this box size (rendered on first use). */
     public function cachedPath(string $path, int $box, string $disk = 's3'): string
     {
+        $disk = self::sourceDisk($disk);
         $dir = storage_path('app/img-cache');
 
         if (! is_dir($dir)) {
@@ -64,6 +65,15 @@ class LocalImageService
         return \App\Support\RenderSlots::run(
             fn () => is_file($cached) ? $cached : $this->render($path, $box, $disk, $dir, $cached)
         );
+    }
+
+    /**
+     * Eugene fork: photos on R2 keep a full home copy (galleries:tier). Render from that copy (LAN, no
+     * download) and share its cache files, so moving a gallery never re-renders anything.
+     */
+    public static function sourceDisk(string $disk): string
+    {
+        return $disk === config('fork.r2_tiering.disk', 'r2') ? config('fork.r2_tiering.home_disk', 's3') : $disk;
     }
 
     private function cacheFile(string $path, int $box, string $disk): string
@@ -103,7 +113,7 @@ class LocalImageService
             return;
         }
 
-        $disk = $photo->diskOrDefault();
+        $disk = self::sourceDisk($photo->diskOrDefault());
         $boxes = [(int) config('picstome.photo_resize', 2048), (int) config('picstome.photo_thumb_resize', 1000)];
 
         // Eugene fork: both sizes from one download + one decode of the original (was one each)
