@@ -119,3 +119,36 @@ it('renders R2 photos from the home copy and shares its image cache', function (
         ->and(\App\Services\LocalImageService::sourceDisk('s3'))->toBe('s3')
         ->and(\App\Services\LocalImageService::sourceDisk('public'))->toBe('public');
 });
+
+it('heals files deleted from R2: photos are copied up again, lost ZIPs get rebuilt', function () {
+    $gallery = Gallery::factory()->create();
+    $photo = tierPhoto($gallery, 'a.jpg');
+    $this->artisan('galleries:tier', ['gallery' => [$gallery->id], '--to' => 'r2'])->assertSuccessful();
+
+    $zipPath = "galleries/{$gallery->id}/archives/x.zip";
+    Storage::disk('r2')->put($zipPath, 'zip');
+    $zip = \App\Models\GalleryArchive::factory()->create([
+        'gallery_id' => $gallery->id, 'team_id' => $gallery->team_id, 'status' => 'ready',
+        'disk' => 'r2', 'path' => $zipPath, 'expires_at' => now()->addDays(90),
+    ]);
+
+    // Someone deletes everything in the Cloudflare dashboard
+    Storage::disk('r2')->delete([$photo->path, $zipPath]);
+
+    $this->artisan('galleries:tier', ['--check' => true])->assertSuccessful();
+
+    Storage::disk('r2')->assertExists($photo->path);
+    expect($photo->fresh()->disk)->toBe('r2')
+        ->and($zip->fresh()->status)->toBe('expired')
+        ->and($zip->fresh()->isReady())->toBeFalse();
+});
+
+it('reports a photo missing from both R2 and home', function () {
+    $gallery = Gallery::factory()->create();
+    $photo = tierPhoto($gallery, 'a.jpg');
+    $this->artisan('galleries:tier', ['gallery' => [$gallery->id], '--to' => 'r2'])->assertSuccessful();
+    Storage::disk('r2')->delete($photo->path);
+    Storage::disk('s3')->delete($photo->path);
+
+    $this->artisan('galleries:tier', ['--check' => true])->assertFailed();
+});

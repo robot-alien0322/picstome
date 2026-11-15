@@ -32,7 +32,8 @@ class TierGalleriesCommand extends Command
         {gallery?* : Gallery ids (not needed with --auto)}
         {--to= : r2 or home}
         {--auto : Policy: active galleries to R2, galleries quiet for the configured days back home}
-        {--dry-run : Only show what would move}';
+        {--dry-run : Only show what would move}
+        {--check : Only verify R2 against the database and repair (also runs first with --auto)}';
 
     protected $description = 'Eugene fork: move galleries\' downloads between Cloudflare R2 and home (Garage)';
 
@@ -46,12 +47,17 @@ class TierGalleriesCommand extends Command
         $this->r2 = $cfg['disk'];
         $this->home = $cfg['home_disk'];
 
+        if ($this->option('check')) {
+            return $this->heal(app(GalleryArchiveService::class)) > 0 ? self::FAILURE : self::SUCCESS;
+        }
+
         if ($this->option('auto')) {
             if (! $cfg['enabled']) {
                 $this->info('R2 tiering is turned off (PICSTOME_R2_TIERING).');
 
                 return self::SUCCESS;
             }
+            $this->heal(app(GalleryArchiveService::class));
             [$up, $down] = $this->plan((int) $cfg['active_days'], (int) $cfg['quiet_minutes']);
         } else {
             $to = $this->option('to');
@@ -80,6 +86,73 @@ class TierGalleriesCommand extends Command
         }
 
         return $failed > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    /**
+     * Self-heal: make sure everything the database says is on R2 really is (e.g. after files were deleted
+     * in the Cloudflare dashboard). Missing photos are copied up again from home; a missing ZIP is marked
+     * expired so it gets rebuilt (galleries:prepare-downloads, or the next "Download all").
+     * One listing per gallery. Returns the number of files that could not be repaired.
+     */
+    private function heal(GalleryArchiveService $archives): int
+    {
+        $galleryIds = Photo::where('disk', $this->r2)->distinct()->pluck('gallery_id')
+            ->merge(\App\Models\GalleryArchive::where('disk', $this->r2)->where('status', 'ready')
+                ->whereNull('storage_deleted_at')->distinct()->pluck('gallery_id'))
+            ->unique();
+
+        $unfixed = 0;
+        foreach (Gallery::whereIn('id', $galleryIds)->get() as $gallery) {
+            $photos = $gallery->photos()->where('disk', $this->r2)->get();
+            $versions = PhotoVersion::whereIn('photo_id', $gallery->photos()->select('id'))->where('disk', $this->r2)->get();
+            $zips = \App\Models\GalleryArchive::where('gallery_id', $gallery->id)->where('disk', $this->r2)
+                ->where('status', 'ready')->whereNull('storage_deleted_at')->whereNotNull('path')->get();
+
+            $expected = [];
+            foreach ([...$photos, ...$versions] as $row) {
+                foreach (array_filter([$row->path, $row->raw_path]) as $path) {
+                    $expected[$path] = true;
+                }
+            }
+            $any = array_key_first($expected) ?? $zips->first()?->path;
+            if ($any === null || ! preg_match('#^((?:.*?/)?galleries/[^/]+)/#', $any, $m)) {
+                continue;
+            }
+
+            try {
+                $present = array_flip(Storage::disk($this->r2)->allFiles($m[1]));
+            } catch (\Throwable $e) {
+                $this->warn("#{$gallery->id}: could not list R2 ({$e->getMessage()})");
+
+                continue;
+            }
+
+            $missing = array_keys(array_diff_key($expected, $present));
+            $fixed = 0;
+            foreach ($missing as $path) {
+                if ($this->copy($this->home, $this->r2, $path)) {
+                    $fixed++;
+                } else {
+                    $unfixed++;
+                    $this->warn("  #{$gallery->id} {$path}: missing on R2 and could not be copied from home");
+                }
+            }
+
+            $lostZips = $zips->reject(fn ($a) => isset($present[$a->path]));
+            foreach ($lostZips as $archive) {
+                DB::table('gallery_archives')->where('id', $archive->id)
+                    ->update(['status' => 'expired', 'expires_at' => now(), 'storage_deleted_at' => now()]);
+            }
+
+            if ($missing !== [] || $lostZips->isNotEmpty()) {
+                $summary = sprintf('#%d %s: %d photo file(s) missing on R2, %d re-copied from home; %d ZIP(s) missing, marked for rebuild',
+                    $gallery->id, $gallery->name, count($missing), $fixed, $lostZips->count());
+                $this->warn($summary);
+                Log::warning('galleries:tier heal '.$summary);
+            }
+        }
+
+        return $unfixed;
     }
 
     /** @return array{0: Collection<int, Gallery>, 1: Collection<int, Gallery>} */
