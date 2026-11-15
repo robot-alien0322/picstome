@@ -32,6 +32,16 @@ return [
     // Empty = app.timezone.
     'display_timezone' => env('PICSTOME_DISPLAY_TIMEZONE') ?: env('APP_TIMEZONE', 'UTC'),
 
+    // R2 tiering (galleries:tier): active galleries get a copy on Cloudflare R2 for downloads; home (Garage)
+    // keeps everything. Daily: quiet-for-a-while new uploads go up, galleries idle for active_days come home.
+    'r2_tiering' => [
+        'enabled' => (bool) env('PICSTOME_R2_TIERING', false),
+        'disk' => 'r2',
+        'home_disk' => 's3',
+        'active_days' => (int) env('PICSTOME_R2_ACTIVE_DAYS', 90),
+        'quiet_minutes' => (int) env('PICSTOME_R2_QUIET_MINUTES', 120),
+    ],
+
     // How many image renders may run at once (web requests + queue workers together).
     'render_slots' => (int) env('PICSTOME_RENDER_SLOTS', 2),
 ];

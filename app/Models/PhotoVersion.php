@@ -121,6 +121,13 @@ class PhotoVersion extends Model
             DeleteFromDisk::dispatch($this->thumb_path, $this->diskOrDefault(), $ignorePhotoId, $this->id);
         }
 
+        // Eugene fork: versions on R2 also have a home copy (galleries:tier); remove it too.
+        if ($this->diskOrDefault() === config('fork.r2_tiering.disk', 'r2')) {
+            foreach (array_filter([$this->path, $this->raw_path, $this->thumb_path]) as $path) {
+                DeleteFromDisk::dispatch($path, config('fork.r2_tiering.home_disk', 's3'), $ignorePhotoId, $this->id);
+            }
+        }
+
         return $this;
     }
 

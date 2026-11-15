@@ -61,6 +61,21 @@ return [
             'report' => false,
         ],
 
+        // Eugene fork: Cloudflare R2 (galleries:tier). Downloads are presigned straight from R2; display
+        // URLs ('url') keep pointing at the home copy, which Garage always keeps.
+        'r2' => [
+            'driver' => 's3',
+            'key' => env('R2_ACCESS_KEY_ID'),
+            'secret' => env('R2_SECRET_ACCESS_KEY'),
+            'region' => 'auto',
+            'bucket' => env('R2_BUCKET', 'picstome'),
+            'url' => env('R2_DISPLAY_URL', env('AWS_URL')),
+            'endpoint' => env('R2_ENDPOINT'),
+            'use_path_style_endpoint' => true,
+            'throw' => false,
+            'report' => false,
+        ],
+
     ],
 
     /*

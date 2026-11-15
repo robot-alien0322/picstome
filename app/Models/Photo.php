@@ -618,6 +618,13 @@ class Photo extends Model
             DeleteFromDisk::dispatch($this->raw_path, $this->diskOrDefault(), $this->id);
         }
 
+        // Eugene fork: photos on R2 also have a home copy (galleries:tier); remove it too.
+        if ($this->diskOrDefault() === config('fork.r2_tiering.disk', 'r2')) {
+            foreach (array_filter([$this->path, $this->thumb_path, $this->raw_path]) as $path) {
+                DeleteFromDisk::dispatch($path, config('fork.r2_tiering.home_disk', 's3'), $this->id);
+            }
+        }
+
         return $this;
     }
 

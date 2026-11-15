@@ -8,4 +8,5 @@ return [
     App\Providers\GalleryFoldersServiceProvider::class, // Eugene fork: gallery folders
     App\Providers\GalleryShortLinksServiceProvider::class, // Eugene fork: short links
     App\Providers\GalleryActivityServiceProvider::class, // Eugene fork: activity + download emails
+    App\Providers\R2TieringServiceProvider::class, // Eugene fork: R2 tiering schedule
 ];
