@@ -54,6 +54,11 @@ class PhotoThumbnailService
 
         $targetPath = $this->pathFor($sourcePath);
 
+        // Eugene fork: thumbnails of photos on R2 live only in the home copy (galleries:tier).
+        if ($disk === config('fork.r2_tiering.disk', 'r2')) {
+            $disk = config('fork.r2_tiering.home_disk', 's3');
+        }
+
         $stored = Storage::disk($disk)->putFileAs(
             path: dirname($targetPath),
             file: new File($temporaryPath),

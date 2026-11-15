@@ -37,14 +37,27 @@ it('copies photos to R2, keeps the home copy, and moves them back', function () 
 
     expect($photo->fresh()->disk)->toBe('r2')
         ->and($photo->fresh()->updated_at->equalTo($updated))->toBeTrue();
-    Storage::disk('r2')->assertExists([$photo->path, $photo->thumb_path]);
+    Storage::disk('r2')->assertExists($photo->path);
+    Storage::disk('r2')->assertMissing($photo->thumb_path);
     Storage::disk('s3')->assertExists([$photo->path, $photo->thumb_path]);
 
     $this->artisan('galleries:tier', ['gallery' => [$gallery->id], '--to' => 'home'])->assertSuccessful();
 
     expect($photo->fresh()->disk)->toBe('s3');
     Storage::disk('r2')->assertMissing($photo->path);
-    Storage::disk('s3')->assertExists($photo->path);
+    Storage::disk('s3')->assertExists([$photo->path, $photo->thumb_path]);
+});
+
+it('cleans up a thumbnail left on R2 when a gallery comes home', function () {
+    $gallery = Gallery::factory()->create();
+    $photo = tierPhoto($gallery, 'a.jpg', ['disk' => 'r2']);
+    Storage::disk('r2')->put($photo->path, str_repeat('x', 2048));
+    Storage::disk('r2')->put($photo->thumb_path, 'thumb');
+
+    $this->artisan('galleries:tier', ['gallery' => [$gallery->id], '--to' => 'home'])->assertSuccessful();
+
+    Storage::disk('r2')->assertMissing([$photo->path, $photo->thumb_path]);
+    Storage::disk('s3')->assertExists($photo->thumb_path);
 });
 
 it('leaves videos and photos still processing at home', function () {

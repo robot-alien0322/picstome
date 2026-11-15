@@ -23,7 +23,8 @@ use Illuminate\Support\Facades\Storage;
  * photo, which makes it the backup, keeps display URLs (thumbnails, /media) working, and makes moving
  * a gallery home cheap: switch it back and delete the R2 copy.
  *
- * Only processed image files move; videos/PDFs and photos still processing stay home.
+ * Only processed image files move; videos/PDFs and photos still processing stay home. Grid thumbnails
+ * (thumb_path) never go to R2: they are only ever shown from the home copy.
  */
 class TierGalleriesCommand extends Command
 {
@@ -129,7 +130,7 @@ class TierGalleriesCommand extends Command
         $moved = ['photos' => [], 'versions' => []];
         foreach (['photos' => $photos, 'versions' => $versions] as $table => $rows) {
             foreach ($rows as $row) {
-                $paths = array_values(array_filter([$row->path, $row->thumb_path ?? null, $row->raw_path]));
+                $paths = array_values(array_filter([$row->path, $row->raw_path]));
                 $ok = true;
                 foreach ($paths as $path) {
                     if (! $this->copy($from, $to, $path)) {
@@ -139,7 +140,8 @@ class TierGalleriesCommand extends Command
                     }
                 }
                 if ($ok) {
-                    $moved[$table][] = [$row->id, $paths];
+                    // Older copies may have put the thumbnail on R2 too; clean it up when leaving R2.
+                    $moved[$table][] = [$row->id, array_values(array_filter([...$paths, $row->thumb_path ?? null]))];
                 }
             }
         }
