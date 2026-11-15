@@ -18,7 +18,7 @@ beforeEach(function () {
 });
 
 test('preparing a shared gallery download redirects to the shared download tab', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery']);
+    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
 
     get(route('shares.download', $gallery))
@@ -44,7 +44,7 @@ test('unshared gallery can not be downloaded', function () {
 });
 
 test('undownloadable shared gallery can not be downloaded', function () {
-    $gallery = Gallery::factory()->shared()->undownloadable()->create(['ulid' => '0123ABC']);
+    $gallery = Gallery::factory()->shared()->undownloadable()->create(['ulid' => '0123ABC', 'require_download_email' => false]); // Eugene fork: no email gate
 
     get('/shares/0123ABC/download')->assertStatus(401);
 });
@@ -56,7 +56,7 @@ test('unauthenticated visitors to a password-protected gallery are redirected to
 });
 
 test('visitors with unlocked gallery can request the password-protected download', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->protected()->create(['ulid' => '0123ABC']);
+    $gallery = Gallery::factory()->shared()->downloadable()->protected()->create(['ulid' => '0123ABC', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
     session()->put('unlocked_gallery_ulids', ['0123ABC']);
 
@@ -69,7 +69,7 @@ test('visitors with unlocked gallery can request the password-protected download
 });
 
 test('a downloadable shared gallery can request only favorites as a zip archive', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery']);
+    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'))->toggleFavorite();
     $gallery->addPhoto(UploadedFile::fake()->image('photo2.jpg'));
 
@@ -88,7 +88,7 @@ test('a downloadable shared gallery can request only favorites as a zip archive'
 });
 
 test('a ready shared archive redirects to a presigned storage url', function () {
-    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery']);
+    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
 
     $service = app(GalleryArchiveService::class);
@@ -106,7 +106,7 @@ test('a ready shared archive redirects to a presigned storage url', function () 
 test('the legacy streamed shared zip is used when archives are disabled', function () {
     config()->set('picstome.gallery_archives.enabled', false);
 
-    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery']);
+    $gallery = Gallery::factory()->shared()->downloadable()->create(['ulid' => '1234ABC', 'name' => 'Example Gallery', 'require_download_email' => false]); // Eugene fork: no email gate
     $gallery->addPhoto(UploadedFile::fake()->image('photo1.jpg'));
 
     get(route('shares.download', $gallery))

@@ -88,7 +88,7 @@ test('shared gallery applies the team brand color', function () {
     get('/shares/0123ABC/'.$gallery->slug)
         ->assertOk()
         ->assertSee('--color-violet-500', false)
-        ->assertSee('bg-(--color-accent)', false);
+        ->assertSee("--color-accent", false); // Eugene fork: the accent bar under the title is gone; the variable is still set
 });
 
 test('bare share URL redirects to the slug URL', function () {

@@ -88,15 +88,17 @@ class TierGalleriesCommand extends Command
         $cutoff = now()->subDays($activeDays);
         $isActive = fn (Gallery $g) => $g->created_at >= $cutoff
             || GalleryActivity::where('gallery_id', $g->id)->where('created_at', '>=', $cutoff)->exists();
+        // A ZIP still building would go stale (its fingerprint includes the disk) and rebuild: wait for it.
         $isQuiet = fn (Gallery $g) => ! $g->photos()
             ->where(fn ($q) => $q->whereIn('status', ['pending', 'processing'])
                 ->orWhere('uploaded_at', '>=', now()->subMinutes($quietMinutes)))
-            ->exists();
+            ->exists()
+            && ! \App\Models\GalleryArchive::where('gallery_id', $g->id)->whereIn('status', ['pending', 'building'])->exists();
 
         $withDisk = fn (string $disk) => Gallery::whereHas('photos', fn ($q) => $q->where('disk', $disk))->get();
 
         $up = $withDisk($this->home)->filter(fn (Gallery $g) => $isActive($g) && $isQuiet($g))->values();
-        $down = $withDisk($this->r2)->reject($isActive)->values();
+        $down = $withDisk($this->r2)->filter(fn (Gallery $g) => ! $isActive($g) && $isQuiet($g))->values();
 
         return [$up, $down];
     }

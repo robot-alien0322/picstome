@@ -1352,6 +1352,7 @@ new class extends Component
                 <livewire:gallery-activity-panel :$gallery :key="'activity-panel-'.$gallery->id" />
             </div>
             <div x-show="$wire.activeTab === 'download'" class="pt-1" data-gallery-panel>
+                    <livewire:gallery-prepare-downloads :$gallery :key="'prepare-downloads-'.$gallery->id" /> {{-- Eugene fork --}}
                     <livewire:gallery-download-panel
                         :$gallery
                         :count="$this->totalPhotos"

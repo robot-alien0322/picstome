@@ -673,7 +673,7 @@ class GalleryArchiveService
         }
 
         try {
-            $stream = Storage::disk($photo->diskOrDefault())->readStream($photo->path);
+            $stream = Storage::disk(LocalImageService::sourceDisk($photo->diskOrDefault()))->readStream($photo->path); // Eugene fork: home copy
 
             if (! is_resource($stream)) {
                 return 'skipped';
@@ -889,7 +889,7 @@ class GalleryArchiveService
             $photo = $entry['photo'];
 
             try {
-                $url = Storage::disk($photo->diskOrDefault())->temporaryUrl(
+                $url = Storage::disk(LocalImageService::sourceDisk($photo->diskOrDefault()))->temporaryUrl( // Eugene fork: home copy
                     $photo->path,
                     now()->addHours(6),
                 );
